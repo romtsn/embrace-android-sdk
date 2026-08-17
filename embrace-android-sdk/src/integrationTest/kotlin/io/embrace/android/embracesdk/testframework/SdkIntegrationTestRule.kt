@@ -24,6 +24,7 @@ import io.embrace.android.embracesdk.internal.injection.EssentialServiceModuleIm
 import io.embrace.android.embracesdk.internal.injection.InitModule
 import io.embrace.android.embracesdk.internal.injection.ModuleInitBootstrapper
 import io.embrace.android.embracesdk.internal.serialization.toJson
+import io.embrace.android.embracesdk.internal.utils.EmbTrace
 import io.embrace.android.embracesdk.internal.utils.Provider
 import io.embrace.android.embracesdk.testframework.actions.EmbraceActionInterface
 import io.embrace.android.embracesdk.testframework.actions.EmbraceOtelExportAssertionInterface
@@ -35,6 +36,7 @@ import io.embrace.android.embracesdk.testframework.export.FilteredSpanExporter
 import io.embrace.android.embracesdk.testframework.server.FakeApiServer
 import io.opentelemetry.kotlin.logging.export.toOtelKotlinLogRecordExporter
 import io.opentelemetry.kotlin.tracing.export.toOtelKotlinSpanExporter
+import kotlinx.coroutines.runBlocking
 import okhttp3.Protocol
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.assertEquals
@@ -176,13 +178,22 @@ internal class SdkIntegrationTestRule(
                     expectSdkToStart,
                     embraceImpl.isStarted
                 )
-
+                awaitAsyncInstrumentation()
             }
         }
         testCaseAction(action)
+        drainExternalExports()
         assertAction(payloadAssertion)
         spanExporter.failOnDuplicate()
         otelExportAssertion(otelAssertion)
+    }
+
+    private fun drainExternalExports() {
+        val otelSdkConfig = bootstrapper.openTelemetryModule.otelSdkConfig
+        runBlocking {
+            otelSdkConfig.spanProcessor.forceFlush()
+            otelSdkConfig.logRecordProcessor.forceFlush()
+        }
     }
 
     /**
@@ -206,6 +217,7 @@ internal class SdkIntegrationTestRule(
      */
     override fun before() {
         Thread.setDefaultUncaughtExceptionHandler(null)
+        EmbTrace.durationTracker.reset()
     }
 
     /**

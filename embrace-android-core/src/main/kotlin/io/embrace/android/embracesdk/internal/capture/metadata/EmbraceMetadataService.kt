@@ -2,7 +2,6 @@ package io.embrace.android.embracesdk.internal.capture.metadata
 
 import android.app.usage.StorageStatsManager
 import android.content.Context
-import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Environment
 import android.os.Process
@@ -42,25 +41,25 @@ internal class EmbraceMetadataService(
 
     private var appVersion: String?
         get() = store.getString(PREVIOUS_APP_VERSION_KEY)
-        set(value) = store.edit { putString(PREVIOUS_APP_VERSION_KEY, value) }
+        set(value) = store.editAndCommit { putString(PREVIOUS_APP_VERSION_KEY, value) }
 
     private var osVersion: String?
         get() = store.getString(PREVIOUS_OS_VERSION_KEY)
-        set(value) = store.edit { putString(PREVIOUS_OS_VERSION_KEY, value) }
+        set(value) = store.editAndCommit { putString(PREVIOUS_OS_VERSION_KEY, value) }
 
     /**
      * Queues in a single thread executor callables to retrieve values in background
      */
     override fun precomputeValues() {
         metadataBackgroundWorker.submit {
-            appVersion = res.appVersion
-            osVersion = res.osVersion
+            store.batch {
+                appVersion = res.appVersion
+                osVersion = res.osVersion
+            }
             val free = statFs.freeBytes
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && configService.autoDataCaptureBehavior.isDiskUsageCaptureEnabled()) {
                 val deviceDiskAppUsage = getDeviceDiskAppUsage(
                     context.getSystemServiceSafe(Context.STORAGE_STATS_SERVICE),
-                    context.packageManager,
-                    context.packageName,
                 )
                 if (deviceDiskAppUsage != null) {
                     diskUsage = DiskUsage(deviceDiskAppUsage, free)
@@ -76,15 +75,12 @@ internal class EmbraceMetadataService(
     @RequiresApi(Build.VERSION_CODES.O)
     private fun getDeviceDiskAppUsage(
         storageStatsManager: StorageStatsManager?,
-        packageManager: PackageManager,
-        contextPackageName: String?,
     ): Long? {
         runCatching {
-            val packageInfo = packageManager.getPackageInfo(contextPackageName!!, 0)
-            if (packageInfo?.packageName != null && storageStatsManager != null) {
+            if (storageStatsManager != null) {
                 val stats = storageStatsManager.queryStatsForPackage(
                     StorageManager.UUID_DEFAULT,
-                    packageInfo.packageName,
+                    context.packageName,
                     Process.myUserHandle(),
                 )
                 return stats.appBytes + stats.dataBytes + stats.cacheBytes

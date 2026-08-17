@@ -2,12 +2,13 @@ package io.embrace.android.embracesdk.internal
 
 import android.app.Application
 import android.content.Context
+import android.content.pm.PackageInfo
 import io.embrace.android.embracesdk.internal.arch.InstrumentationArgs
 import io.embrace.android.embracesdk.internal.arch.SessionPartChangeListener
 import io.embrace.android.embracesdk.internal.arch.SessionPartEndListener
 import io.embrace.android.embracesdk.internal.arch.datasource.TelemetryDestination
 import io.embrace.android.embracesdk.internal.arch.navigation.NavigationTrackingService
-import io.embrace.android.embracesdk.internal.arch.state.AppStateTracker
+import io.embrace.android.embracesdk.internal.arch.state.ProcessStateTracker
 import io.embrace.android.embracesdk.internal.capture.session.UserSessionPropertiesService
 import io.embrace.android.embracesdk.internal.clock.Clock
 import io.embrace.android.embracesdk.internal.config.ConfigService
@@ -39,7 +40,7 @@ internal class InstrumentationArgsImpl(
     override val uuidSource: UuidSource,
     override val ordinalStore: OrdinalStore,
     override val processIdentifier: String,
-    override val appStateTracker: AppStateTracker,
+    override val processStateTracker: ProcessStateTracker,
     override val navigationTrackingService: NavigationTrackingService,
     override val telemetryService: TelemetryService,
     private val workerThreadModule: WorkerThreadModule,
@@ -53,6 +54,10 @@ internal class InstrumentationArgsImpl(
     override val crashMarkerFile: File by lazy { crashMarkerFileProvider() }
 
     override val store: KeyValueStore by lazy { storeProvider() }
+
+    override val packageInfo: PackageInfo? by lazy {
+        runCatching { context.packageManager.getPackageInfo(context.packageName, 0) }.getOrNull()
+    }
 
     override val httpRequestInfoModifierChain: HttpRequestInfoModifierChain = HttpRequestInfoModifierChain(logger)
 

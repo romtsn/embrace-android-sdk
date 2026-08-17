@@ -6,7 +6,7 @@ import io.embrace.android.embracesdk.assertions.assertMatches
 import io.embrace.android.embracesdk.assertions.assertNoPreviousSessionPart
 import io.embrace.android.embracesdk.assertions.assertPreviousSessionPart
 import io.embrace.android.embracesdk.assertions.findSessionPartSpan
-import io.embrace.android.embracesdk.assertions.getOtelSessionId
+import io.embrace.android.embracesdk.assertions.getUserSessionId
 import io.embrace.android.embracesdk.assertions.getSessionPartId
 import io.embrace.android.embracesdk.assertions.hasLinkToEmbraceSpan
 import io.embrace.android.embracesdk.assertions.hasSpanSnapshotsOfType
@@ -14,7 +14,7 @@ import io.embrace.android.embracesdk.fakes.config.FakeEnabledFeatureConfig
 import io.embrace.android.embracesdk.fakes.config.FakeInstrumentedConfig
 import io.embrace.android.embracesdk.internal.arch.schema.EmbType
 import io.embrace.android.embracesdk.internal.arch.schema.LinkType
-import io.embrace.android.embracesdk.internal.arch.state.AppState
+import io.embrace.android.embracesdk.internal.arch.state.ProcessState
 import io.embrace.android.embracesdk.internal.config.remote.BackgroundActivityRemoteConfig
 import io.embrace.android.embracesdk.internal.config.remote.RemoteConfig
 import io.embrace.android.embracesdk.internal.payload.AppFramework
@@ -66,7 +66,7 @@ internal class SessionPartPayloadTest {
                         assertTrue(checkNotNull(deviceModel).isNotBlank())
                         assertEquals(AppFramework.NATIVE, appFramework)
                     }
-                    assertTrue(getOtelSessionId().isNotBlank())
+                    assertTrue(getUserSessionId().isNotBlank())
                 }
             }
         )
@@ -223,7 +223,7 @@ internal class SessionPartPayloadTest {
                 recordSession()
             },
             assertAction = {
-                val bas = getSessionEnvelopes(expectedSize = 3, state = AppState.BACKGROUND)
+                val bas = getSessionEnvelopes(expectedSize = 3, state = ProcessState.BACKGROUND)
                 val sessions = getSessionEnvelopes(3)
                 val firstBa = bas[0]
                 val secondBa = bas[1]

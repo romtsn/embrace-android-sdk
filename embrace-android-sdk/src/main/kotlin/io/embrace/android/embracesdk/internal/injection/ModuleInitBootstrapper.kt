@@ -8,6 +8,7 @@ import io.embrace.android.embracesdk.internal.config.ConfigService
 import io.embrace.android.embracesdk.internal.config.PersistedConfig
 import io.embrace.android.embracesdk.internal.instrumentation.startup.DataCaptureServiceModule
 import io.embrace.android.embracesdk.internal.instrumentation.startup.DataCaptureServiceModuleSupplier
+import io.embrace.android.embracesdk.internal.instrumentation.startup.SdkInitResourceUsageTracker
 import io.embrace.android.embracesdk.internal.instrumentation.thread.blockage.ThreadBlockageService
 import io.embrace.android.embracesdk.internal.instrumentation.thread.blockage.ThreadBlockageServiceSupplier
 import io.embrace.android.embracesdk.internal.prefs.createKeyValueStore
@@ -21,7 +22,7 @@ import io.embrace.android.embracesdk.internal.worker.Worker
  * A class that wires together and initializes modules in a manner that makes them work as a cohesive whole.
  */
 internal class ModuleInitBootstrapper(
-    override val initModule: InitModule = EmbTrace.trace("init-module", ::InitModuleImpl),
+    override val initModule: InitModule = EmbTrace.trace("init-module", code = ::InitModuleImpl),
     override val openTelemetryModule: OpenTelemetryModule = EmbTrace.trace("otel-module") {
         OpenTelemetryModuleImpl(initModule)
     },
@@ -48,6 +49,7 @@ internal class ModuleInitBootstrapper(
     @Volatile
     private var delegate: ModuleGraph = UninitializedModuleGraph
     override val sdkStartTimeMs: Long get() = delegate.sdkStartTimeMs
+    override val sdkInitResourceUsageTracker: SdkInitResourceUsageTracker get() = delegate.sdkInitResourceUsageTracker
     override val coreModule: CoreModule get() = delegate.coreModule
     override val configService: ConfigService get() = delegate.configService
     override val workerThreadModule: WorkerThreadModule get() = delegate.workerThreadModule
@@ -68,15 +70,20 @@ internal class ModuleInitBootstrapper(
     fun init(
         context: Context,
         versionChecker: VersionChecker = BuildVersionChecker,
-    ): Boolean = EmbTrace.trace("modules-init") {
+    ): Boolean = EmbTrace.trace(sectionName = "modules-init", recordDuration = true) {
         try {
             if (isInitialized()) {
                 return@trace false
             }
-            // stamped before anything else so that the SDK init span covers all the work below
+            // stamped before anything else so that the SDK init span covers all the work below,
+            // and the perf samples cover the same interval as the span
             val startTimeMs = initModule.clock.now()
+            val resourceUsageTracker = SdkInitResourceUsageTracker().apply { captureStart() }
             val keyValueStore = lazy { createKeyValueStore(context, initModule.jsonSerializer) }
-            val persistedConfig = EmbTrace.trace("persisted-config-load") {
+            val persistedConfig = EmbTrace.trace(
+                sectionName = "persisted-config-load",
+                recordDuration = true,
+            ) {
                 PersistedConfig(
                     serializer = initModule.jsonSerializer,
                     filesDir = context.filesDir,
@@ -95,6 +102,7 @@ internal class ModuleInitBootstrapper(
                 context,
                 versionChecker,
                 startTimeMs,
+                resourceUsageTracker,
                 initModule,
                 openTelemetryModule,
                 workerThreadModule,
@@ -125,6 +133,7 @@ internal class ModuleInitBootstrapper(
             return
         }
         essentialServiceModule.networkConnectivityService.close()
+        openTelemetryModule.otelSdkConfig.shutdownExport()
         workerThreadModule.close()
         delegate = UninitializedModuleGraph
     }

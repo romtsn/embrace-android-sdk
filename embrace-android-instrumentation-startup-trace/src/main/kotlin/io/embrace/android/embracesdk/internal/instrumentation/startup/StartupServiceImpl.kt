@@ -1,15 +1,17 @@
 package io.embrace.android.embracesdk.internal.instrumentation.startup
 
 import io.embrace.android.embracesdk.internal.arch.datasource.TelemetryDestination
-import io.embrace.android.embracesdk.internal.arch.state.AppState
+import io.embrace.android.embracesdk.internal.arch.state.ProcessState
 import io.embrace.android.embracesdk.semconv.EmbAppAttributes
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 internal class StartupServiceImpl(
     private val destination: TelemetryDestination,
-    appVersionStartupCounter: Int?,
+    appVersionStartupCounterProvider: () -> Int?,
 ) : StartupService {
 
-    private val appVersionStartupCounter: Int? = appVersionStartupCounter?.takeIf { it > 0 }
+    private val startupCounter: Int? by lazy { appVersionStartupCounterProvider()?.takeIf { it > 0 } }
 
     @Volatile
     private var sdkInitStartMs: Long? = null
@@ -26,20 +28,47 @@ internal class StartupServiceImpl(
     @Volatile
     private var sdkStartupDurationMs: Long? = null
 
+    @Volatile
+    private var endedInForeground: Boolean = false
+
+    @Volatile
+    private var attributesProvider: (() -> Map<String, String>)? = null
+
+    /**
+     * The built attributes, memoized on first use so the provider is only ever invoked once
+     * and every consumer attaches an identical set.
+     */
+    private val sdkInitAttributes = AtomicReference<Map<String, String>?>(null)
+
+    private val sdkInitSpanRecorded = AtomicBoolean(false)
+
     override fun setSdkStartupInfo(
         startTimeMs: Long,
         endTimeMs: Long,
-        endState: AppState,
+        endState: ProcessState,
         threadName: String,
+        attributesProvider: (() -> Map<String, String>)?,
     ) {
-        val foregroundEnd = endState == AppState.FOREGROUND
-        if (sdkStartupDurationMs == null) {
+        sdkInitStartMs = startTimeMs
+        sdkInitEndMs = endTimeMs
+        this.threadName = threadName
+        endedInForeground = endState == ProcessState.FOREGROUND
+        sdkStartupDurationMs = endTimeMs - startTimeMs
+        this.attributesProvider = attributesProvider
+        sdkInitAttributes.set(null)
+    }
+
+    override fun recordSdkInitSpan() {
+        val startTimeMs = sdkInitStartMs ?: return
+        val endTimeMs = sdkInitEndMs ?: return
+        if (sdkInitSpanRecorded.compareAndSet(false, true)) {
             val attributes = buildMap {
-                put("ended-in-foreground", foregroundEnd.toString())
+                put("ended-in-foreground", endedInForeground.toString())
                 put("thread-name", threadName)
-                if (appVersionStartupCounter != null) {
-                    put(EmbAppAttributes.EMB_APP_VERSION_STARTUP_COUNTER, appVersionStartupCounter.toString())
+                startupCounter?.let { counter ->
+                    put(EmbAppAttributes.EMB_APP_VERSION_STARTUP_COUNTER, counter.toString())
                 }
+                putAll(getSdkInitAttributes())
             }
             destination.recordCompletedSpan(
                 name = "sdk-init",
@@ -49,15 +78,17 @@ internal class StartupServiceImpl(
                 attributes = attributes,
             )
         }
-        sdkInitStartMs = startTimeMs
-        sdkInitEndMs = endTimeMs
-        this.threadName = threadName
-        sdkStartupDurationMs = endTimeMs - startTimeMs
     }
 
     override fun getSdkStartupDuration(): Long? = sdkStartupDurationMs
     override fun getSdkInitStartMs(): Long? = sdkInitStartMs
     override fun getSdkInitEndMs(): Long? = sdkInitEndMs
     override fun getInitThreadName(): String = threadName
-    override fun getAppVersionStartupCounter(): Int? = appVersionStartupCounter
+    override fun getAppVersionStartupCounter(): Int? = startupCounter
+    override fun getSdkInitAttributes(): Map<String, String> {
+        sdkInitAttributes.get()?.let { return it }
+        val computed = attributesProvider?.invoke() ?: emptyMap()
+        sdkInitAttributes.compareAndSet(null, computed)
+        return sdkInitAttributes.get() ?: computed
+    }
 }

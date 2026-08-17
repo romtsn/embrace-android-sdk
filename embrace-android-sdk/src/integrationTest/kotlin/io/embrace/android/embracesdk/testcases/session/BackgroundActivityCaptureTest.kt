@@ -5,11 +5,11 @@ import io.embrace.android.embracesdk.assertions.assertMatches
 import io.embrace.android.embracesdk.assertions.findEventsOfType
 import io.embrace.android.embracesdk.assertions.findSessionPartSpan
 import io.embrace.android.embracesdk.assertions.getLogsOfType
-import io.embrace.android.embracesdk.assertions.getOtelSessionId
 import io.embrace.android.embracesdk.assertions.getSessionPartId
+import io.embrace.android.embracesdk.assertions.getUserSessionId
 import io.embrace.android.embracesdk.assertions.hasSpanSnapshotsOfType
 import io.embrace.android.embracesdk.internal.arch.schema.EmbType
-import io.embrace.android.embracesdk.internal.arch.state.AppState
+import io.embrace.android.embracesdk.internal.arch.state.ProcessState
 import io.embrace.android.embracesdk.internal.clock.nanosToMillis
 import io.embrace.android.embracesdk.internal.config.remote.BackgroundActivityRemoteConfig
 import io.embrace.android.embracesdk.internal.config.remote.RemoteConfig
@@ -20,7 +20,6 @@ import io.embrace.android.embracesdk.semconv.EmbSessionAttributes
 import io.embrace.android.embracesdk.spans.EmbraceSpan
 import io.embrace.android.embracesdk.testframework.SdkIntegrationTestRule
 import io.embrace.android.embracesdk.testframework.assertions.assertSessionIds
-import io.opentelemetry.kotlin.semconv.SessionAttributes
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -52,7 +51,7 @@ internal class BackgroundActivityCaptureTest {
             },
             assertAction = {
                 // filter out dupes from overwritten saves
-                val bgActivities = getSessionEnvelopes(2, AppState.BACKGROUND).distinctBy { it.getSessionPartId() }
+                val bgActivities = getSessionEnvelopes(2, ProcessState.BACKGROUND).distinctBy { it.getSessionPartId() }
                 assertEquals(2, bgActivities.size)
 
                 val first = bgActivities[0]
@@ -99,7 +98,7 @@ internal class BackgroundActivityCaptureTest {
             },
             assertAction = {
                 val sessions = getSessionEnvelopes(2)
-                getSessionEnvelopes(0, AppState.BACKGROUND)
+                getSessionEnvelopes(0, ProcessState.BACKGROUND)
 
                 val logs = getLogEnvelopes(2).flatMap { it.getLogsOfType(EmbType.System.Log) }
                 with(logs[0]) {
@@ -109,7 +108,7 @@ internal class BackgroundActivityCaptureTest {
                             EmbSessionAttributes.EMB_STATE to "background"
                         )
                     )
-                    val sid = attributes?.findAttributeValue(SessionAttributes.SESSION_ID)
+                    val sid = attributes?.findAttributeValue(EmbSessionAttributes.EMB_USER_SESSION_ID)
                     assertFalse(sid.isNullOrBlank())
                 }
                 with(logs[1]) {
@@ -119,14 +118,14 @@ internal class BackgroundActivityCaptureTest {
                             EmbSessionAttributes.EMB_STATE to "background"
                         )
                     )
-                    assertFalse(attributes?.findAttributeValue(SessionAttributes.SESSION_ID).isNullOrBlank())
+                    assertFalse(attributes?.findAttributeValue(EmbSessionAttributes.EMB_USER_SESSION_ID).isNullOrBlank())
                 }
                 with(logs[2]) {
                     assertEquals("warning", body)
                     attributes?.assertMatches(
                         mapOf(
                             EmbSessionAttributes.EMB_STATE to "foreground",
-                            SessionAttributes.SESSION_ID to sessions[1].getOtelSessionId()
+                            EmbSessionAttributes.EMB_USER_SESSION_ID to sessions[1].getUserSessionId()
                         )
                     )
                 }
@@ -137,7 +136,7 @@ internal class BackgroundActivityCaptureTest {
                     attributes?.assertMatches(
                         mapOf(
                             EmbSessionAttributes.EMB_STATE to "foreground",
-                            SessionAttributes.SESSION_ID to secondSession.getOtelSessionId()
+                            EmbSessionAttributes.EMB_USER_SESSION_ID to secondSession.getUserSessionId()
                         )
                     )
                 }
@@ -187,7 +186,7 @@ internal class BackgroundActivityCaptureTest {
                 val session1 = sessions[0]
                 val session2 = sessions[1]
                 assertEquals(2, sessions.size)
-                assertEquals(0, getSessionEnvelopes(0, AppState.BACKGROUND).size)
+                assertEquals(0, getSessionEnvelopes(0, ProcessState.BACKGROUND).size)
 
                 assertEquals(session1.metadata, session2.metadata)
                 assertEquals(
@@ -248,7 +247,7 @@ internal class BackgroundActivityCaptureTest {
         )
         with(checkNotNull(attributes)) {
             assertFalse(findAttributeValue(EmbSessionAttributes.EMB_PROCESS_IDENTIFIER).isNullOrBlank())
-            assertFalse(findAttributeValue(SessionAttributes.SESSION_ID).isNullOrBlank())
+            assertFalse(findAttributeValue(EmbSessionAttributes.EMB_USER_SESSION_ID).isNullOrBlank())
         }
     }
 }

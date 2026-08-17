@@ -15,7 +15,7 @@ import io.embrace.android.embracesdk.fakes.config.FakeProjectConfig
 import io.embrace.android.embracesdk.internal.EmbraceInternalApi
 import io.embrace.android.embracesdk.internal.arch.attrs.toEmbraceAttributeName
 import io.embrace.android.embracesdk.internal.arch.schema.EmbType
-import io.embrace.android.embracesdk.internal.arch.state.AppState
+import io.embrace.android.embracesdk.internal.arch.state.ProcessState
 import io.embrace.android.embracesdk.internal.config.remote.BackgroundActivityRemoteConfig
 import io.embrace.android.embracesdk.internal.config.remote.RemoteConfig
 import io.embrace.android.embracesdk.internal.config.remote.UserSessionRemoteConfig
@@ -37,7 +37,6 @@ import io.embrace.android.embracesdk.testframework.SdkIntegrationTestRule.Compan
 import io.embrace.android.embracesdk.testframework.actions.EmbraceSetupInterface
 import io.opentelemetry.kotlin.logging.SeverityNumber
 import io.opentelemetry.kotlin.semconv.LogAttributes
-import io.opentelemetry.kotlin.semconv.SessionAttributes
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -113,7 +112,7 @@ internal class JvmCrashFeatureTest {
                 simulateJvmUncaughtException(testException)
             },
             assertAction = {
-                val ba = payloadStorageService.getPersistedSession(AppState.BACKGROUND)
+                val ba = payloadStorageService.getPersistedSession(ProcessState.BACKGROUND)
                 assertEquals(0, ba.data.spanSnapshots?.size)
                 payloadStorageService.getPersistedCrashLog().getLastLog().assertCrash(
                     crashIdFromSession = ba.getCrashedId(),
@@ -140,7 +139,6 @@ internal class JvmCrashFeatureTest {
                 val attrs = checkNotNull(crashLog.attributes)
                 val userSessionId = attrs.findAttributeValue(EmbSessionAttributes.EMB_USER_SESSION_ID)
                 assertFalse(userSessionId.isNullOrBlank())
-                assertEquals(userSessionId, attrs.findAttributeValue(SessionAttributes.SESSION_ID))
                 assertEquals("", attrs.findAttributeValue(EmbSessionAttributes.EMB_SESSION_PART_ID) ?: "")
             }
         )
@@ -171,7 +169,6 @@ internal class JvmCrashFeatureTest {
                     hasSession = false,
                 )
                 val attrs = checkNotNull(crashLog.attributes)
-                assertEquals("", attrs.findAttributeValue(SessionAttributes.SESSION_ID) ?: "")
                 assertEquals("", attrs.findAttributeValue(EmbSessionAttributes.EMB_USER_SESSION_ID) ?: "")
                 assertEquals("", attrs.findAttributeValue(EmbSessionAttributes.EMB_SESSION_PART_ID) ?: "")
             }
@@ -204,12 +201,12 @@ internal class JvmCrashFeatureTest {
             },
             assertAction = {
                 // The resurrected session is delivered normally and is not associated with the crash.
-                val resurrectedSession = getSingleSessionEnvelope(AppState.FOREGROUND)
+                val resurrectedSession = getSingleSessionEnvelope(ProcessState.FOREGROUND)
                 assertEquals(resurrectedSessionId, resurrectedSession.getUserSessionId())
                 assertNull(resurrectedSession.getSessionPartSpan()?.attributes?.findAttributeValue(EmbSessionAttributes.EMB_CRASH_ID))
 
                 // The crashing process's own session part is held back during teardown, persisted, and carries the crash id.
-                val ba = payloadStorageService.getPersistedSession(AppState.BACKGROUND)
+                val ba = payloadStorageService.getPersistedSession(ProcessState.BACKGROUND)
                 assertEquals(crashTimeMs, ba.getStartTime())
                 payloadStorageService.getPersistedCrashLog().getLastLog().assertCrash(
                     crashIdFromSession = ba.getCrashedId(),
@@ -313,7 +310,7 @@ internal class JvmCrashFeatureTest {
     }
 
     private fun FakePayloadStorageService.getPersistedSession(
-        state: AppState = AppState.FOREGROUND,
+        state: ProcessState = ProcessState.FOREGROUND,
     ): Envelope<SessionPartPayload> {
         val expectedState = state.name.lowercase()
         return storedPayloadMetadata()

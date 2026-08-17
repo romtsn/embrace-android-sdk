@@ -2,9 +2,10 @@ package io.embrace.android.embracesdk.internal.arch
 
 import android.app.Application
 import android.content.Context
+import android.content.pm.PackageInfo
 import io.embrace.android.embracesdk.internal.arch.datasource.TelemetryDestination
 import io.embrace.android.embracesdk.internal.arch.navigation.NavigationTrackingService
-import io.embrace.android.embracesdk.internal.arch.state.AppStateTracker
+import io.embrace.android.embracesdk.internal.arch.state.ProcessStateTracker
 import io.embrace.android.embracesdk.internal.clock.Clock
 import io.embrace.android.embracesdk.internal.config.ConfigService
 import io.embrace.android.embracesdk.internal.logging.InternalLogger
@@ -33,7 +34,7 @@ interface InstrumentationArgs {
     /**
      * Tracks app state (foreground/background)
      */
-    val appStateTracker: AppStateTracker
+    val processStateTracker: ProcessStateTracker
 
     /**
      * An interface where telemetry can be written.
@@ -107,6 +108,13 @@ interface InstrumentationArgs {
      * is unavailable.
      */
     fun <T> systemService(name: String): T?
+
+    /**
+     * Retrieves the package info for the current app. It is resolved with a single memoized
+     * PackageManager lookup shared across the SDK, and is null if that lookup failed. First
+     * access may trigger the one binder call, so avoid it on perf-sensitive paths.
+     */
+    val packageInfo: PackageInfo?
 
     /**
      * Retrieves the current session part ID, or null if there is no active session part.
