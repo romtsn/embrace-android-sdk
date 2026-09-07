@@ -86,6 +86,24 @@ data class RemoteConfig(
     @SerialName("max_session_properties")
     val maxUserSessionProperties: Int? = null,
 
+    /**
+     * The combined maximum number of tracked experiments and feature flags, counting both active and ended records.
+     */
+    @SerialName("experiment_max_count")
+    val experimentMaxCount: Int? = null,
+
+    /**
+     * The maximum length of an ID for the experiments API.
+     */
+    @SerialName("experiment_id_max_length")
+    val experimentIdMaxLength: Int? = null,
+
+    /**
+     * The maximum length of an experiment variant.
+     */
+    @SerialName("experiment_variant_max_length")
+    val experimentVariantMaxLength: Int? = null,
+
     @Deprecated("Superseded by the flat nsfPctEnabled key; retained for back-compat with persisted/old payloads.")
     @SerialName("network_span_forwarding")
     val networkSpanForwardingRemoteConfig: NetworkSpanForwardingRemoteConfig? = null,
@@ -148,4 +166,16 @@ data class RemoteConfig(
      */
     @SerialName("vitals")
     val vitalsRemoteConfig: VitalsRemoteConfig? = null,
+
+    /**
+     * Percentage of devices for which activity leak detection is captured.
+     */
+    @SerialName("pct_activity_leak_detection_enabled")
+    val pctActivityLeakDetectionEnabled: Float? = null,
+
+    /**
+     * Percentage of devices for which fragment and fragment view leak detection is captured.
+     */
+    @SerialName("pct_fragment_leak_detection_enabled")
+    val pctFragmentLeakDetectionEnabled: Float? = null,
 )
