@@ -1,5 +1,7 @@
 package io.embrace.android.embracesdk.testframework.actions
 
+import android.app.ActivityManager
+import android.content.Context
 import android.os.Build
 import android.os.Looper
 import androidx.lifecycle.Lifecycle
@@ -22,10 +24,10 @@ import io.embrace.android.embracesdk.fixtures.fakeCachedSessionStoredTelemetryMe
 import io.embrace.android.embracesdk.internal.arch.InstrumentationArgs
 import io.embrace.android.embracesdk.internal.arch.InstrumentationProvider
 import io.embrace.android.embracesdk.internal.arch.InstrumentationRegistry
+import io.embrace.android.embracesdk.internal.clock.millisToNanos
 import io.embrace.android.embracesdk.internal.config.BuildInfo
 import io.embrace.android.embracesdk.internal.config.ConfigService
 import io.embrace.android.embracesdk.internal.config.ConfigServiceImpl
-import io.embrace.android.embracesdk.internal.config.CpuAbi
 import io.embrace.android.embracesdk.internal.delivery.debug.DeliveryTracer
 import io.embrace.android.embracesdk.internal.injection.CoreModule
 import io.embrace.android.embracesdk.internal.injection.CoreModuleImpl
@@ -38,21 +40,22 @@ import io.embrace.android.embracesdk.internal.injection.WorkerThreadModule
 import io.embrace.android.embracesdk.internal.injection.WorkerThreadModuleImpl
 import io.embrace.android.embracesdk.internal.instrumentation.crash.ndk.jniDelegateTestOverride
 import io.embrace.android.embracesdk.internal.instrumentation.crash.ndk.sharedObjectLoaderTestOverride
+import io.embrace.android.embracesdk.internal.instrumentation.startup.SdkInitResourceUsageTracker
 import io.embrace.android.embracesdk.internal.instrumentation.thread.blockage.createThreadBlockageService
 import io.embrace.android.embracesdk.internal.logging.InternalErrorType
 import io.embrace.android.embracesdk.internal.otel.spans.SpanRepository
+import io.embrace.android.embracesdk.internal.payload.Attribute
+import io.embrace.android.embracesdk.internal.payload.Envelope
+import io.embrace.android.embracesdk.internal.payload.NativeCrashData
+import io.embrace.android.embracesdk.internal.payload.SessionPartPayload
 import io.embrace.android.embracesdk.internal.prefs.createKeyValueStore
 import io.embrace.android.embracesdk.internal.serialization.PlatformSerializer
-import io.embrace.android.embracesdk.internal.serialization.toJson
 import io.embrace.android.embracesdk.internal.session.lifecycle.AndroidxProcessLifecycleTracker
 import io.embrace.android.embracesdk.internal.spans.CurrentSessionPartSpan
 import io.embrace.android.embracesdk.internal.store.KeyValueStore
 import io.embrace.android.embracesdk.internal.utils.UuidSource
 import io.embrace.android.embracesdk.internal.worker.Worker
 import io.embrace.android.embracesdk.internal.worker.Worker.Background.NonIoRegWorker
-import io.embrace.android.embracesdk.internal.payload.Attribute
-import io.embrace.android.embracesdk.internal.payload.Envelope
-import io.embrace.android.embracesdk.internal.payload.SessionPartPayload
 import io.embrace.android.embracesdk.semconv.EmbCommonAttributes
 import io.embrace.android.embracesdk.semconv.EmbSessionAttributes
 import io.embrace.android.embracesdk.semconv.ExperimentalSemconv
@@ -60,6 +63,8 @@ import io.embrace.android.embracesdk.testframework.SdkIntegrationTestRule
 import org.robolectric.Shadows
 import org.robolectric.shadows.ShadowLooper
 import java.util.concurrent.TimeUnit.MILLISECONDS
+import java.util.concurrent.atomic.AtomicLong
+import kotlin.time.Duration.Companion.days
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -120,6 +125,10 @@ internal class EmbraceSetupInterface(
         createKeyValueStore(fakeCoreModule.context, fakeInitModule.jsonSerializer)
     }
 
+    init {
+        setupPlatformShadows()
+    }
+
     fun createBootstrapper(
         instrumentedConfig: FakeInstrumentedConfig,
         deliveryTracer: DeliveryTracer,
@@ -143,7 +152,7 @@ internal class EmbraceSetupInterface(
                 hasConfiguredOtlpExport = openTelemetryModule.otelSdkConfig::hasConfiguredOtlpExport,
                 sdkVersion = BuildConfig.VERSION_NAME,
                 apiLevel = Build.VERSION.SDK_INT,
-                abis = Build.SUPPORTED_ABIS,
+                primaryAbi = initModule.systemInfo.primaryAbi,
                 logger = initModule.logger,
             )
             DecoratedConfigService(impl)
@@ -208,7 +217,8 @@ internal class EmbraceSetupInterface(
                 override val instrumentationRegistry: InstrumentationRegistry = FakeInstrumentationRegistry(impl.instrumentationRegistry)
                 override val instrumentationArgs: InstrumentationArgs = impl.instrumentationArgs
             }
-        }
+        },
+        sdkInitResourceUsageTrackerSupplier = { fakeSdkInitResourceUsageTracker() },
     )
 
     /**
@@ -234,7 +244,7 @@ internal class EmbraceSetupInterface(
     ) {
         crashData.getCrashFile().createNewFile()
         val key = crashData.getCrashFile().absolutePath
-        val json = serializer.toJson(crashData.nativeCrash)
+        val json = serializer.toJson(crashData.nativeCrash, NativeCrashData.serializer())
         fakeJniDelegate.addCrashRaw(key, json)
     }
 
@@ -371,8 +381,71 @@ internal class EmbraceSetupInterface(
         }
     }
 
+    private fun setupPlatformShadows() {
+        val context = fakeCoreModule.context
+        Shadows.shadowOf(context.packageManager).getInternalMutablePackageInfo(context.packageName).apply {
+            firstInstallTime = SdkIntegrationTestRule.DEFAULT_SDK_START_TIME_MS - 5.days.inWholeMilliseconds
+            lastUpdateTime = SdkIntegrationTestRule.DEFAULT_SDK_START_TIME_MS - 1.days.inWholeMilliseconds
+        }
+        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        Shadows.shadowOf(activityManager).setMemoryInfo(
+            ActivityManager.MemoryInfo().apply {
+                availMem = 1_000_000_000L
+                totalMem = 4_000_000_000L
+            },
+        )
+    }
+
+    /**
+     * Creates an [SdkInitResourceUsageTracker] with faked providers of system data so that the attributes
+     * that are recorded as a result are deterministic and can be hardcoded into the tests and golden files.
+     */
+    private fun fakeSdkInitResourceUsageTracker(): SdkInitResourceUsageTracker {
+        val elapsedMs = statProvider(INIT_WINDOW_MS)
+        val cpuMs = statProvider(INIT_CPU_MS)
+        val runDelayNs = statProvider(INIT_RUN_DELAY_MS.millisToNanos())
+        val readBytes = statProvider(INIT_DISK_READ_KB * 1024L)
+        val gcCount = statProvider(INIT_GC_COUNT)
+        return SdkInitResourceUsageTracker(
+            logger = fakeInitModule.logger,
+            versionChecker = { true },
+            threadCpuTimeMs = cpuMs,
+            elapsedRealtimeMs = elapsedMs,
+            schedstatPathProvider = { FAKE_SCHEDSTAT_PATH },
+            procFileReader = { path ->
+                when {
+                    path.endsWith("schedstat") -> "0 ${runDelayNs()} 1\n".toByteArray()
+                    path.endsWith("/io") -> "read_bytes: ${readBytes()}\n".toByteArray()
+                    else -> null
+                }
+            },
+            runtimeStatReader = { gcCount().toString() },
+        )
+    }
+
     private companion object {
         private const val ASYNC_INSTRUMENTATION_TIMEOUT_MS = 5000L
+        private const val INIT_WINDOW_MS = 100L
+        private const val INIT_CPU_MS = 50L
+        private const val INIT_RUN_DELAY_MS = 12L
+        private const val INIT_DISK_READ_KB = 48L
+        private const val INIT_GC_COUNT = 2L
+        private const val FAKE_SCHEDSTAT_PATH = "/proc/self/task/123/schedstat"
+
+        /**
+         * Function that returns a lambda that returns 0 when it has been invoked an odd number of times, and [evenReadValue]
+         * when it's been invoked an even number of times.
+         */
+        private fun statProvider(evenReadValue: Long): () -> Long {
+            val reads = AtomicLong()
+            return {
+                if (reads.incrementAndGet() % 2 == 1L) {
+                    0L
+                } else {
+                    evenReadValue
+                }
+            }
+        }
 
         fun initWorkerThreadModule(
             fakeInitModule: FakeInitModule,
@@ -400,6 +473,5 @@ internal class EmbraceSetupInterface(
             "99",
             "com.fake.package",
         )
-        override val cpuAbi: CpuAbi = CpuAbi.ARM64_V8A
     }
 }

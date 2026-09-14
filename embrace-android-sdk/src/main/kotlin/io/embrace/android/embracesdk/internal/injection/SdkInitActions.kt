@@ -13,6 +13,7 @@ import io.embrace.android.embracesdk.internal.instrumentation.network.NetworkCap
 import io.embrace.android.embracesdk.internal.instrumentation.network.NetworkRequestDataSource
 import io.embrace.android.embracesdk.internal.instrumentation.network.NetworkStateDataSource
 import io.embrace.android.embracesdk.internal.instrumentation.network.NetworkStatusDataSource
+import io.embrace.android.embracesdk.internal.instrumentation.startup.ArtOptimizationState
 import io.embrace.android.embracesdk.internal.instrumentation.startup.sdkInitEnvironmentAttributes
 import io.embrace.android.embracesdk.internal.instrumentation.startup.toSdkInitDurationAttributes
 import io.embrace.android.embracesdk.internal.logging.InternalErrorType
@@ -273,16 +274,25 @@ internal fun ModuleGraph.markSdkInitComplete(sdkInitDurationsProvider: () -> Map
                 sdkInitDurations.toSdkInitDurationAttributes() +
                     resourceUsageTracker.buildAttributes() +
                     sdkInitEnvironmentAttributes(
-                        activityManagerProvider = {
-                            instrumentationModule.instrumentationArgs.systemService(Context.ACTIVITY_SERVICE)
-                        },
+                        nowMs = initModule.clock.now(),
+                        logger = initModule.logger,
+                        packageInfo = instrumentationModule.instrumentationArgs.packageInfo,
                         powerManagerProvider = {
                             instrumentationModule.instrumentationArgs.systemService(Context.POWER_SERVICE)
                         },
-                        packageInfo = instrumentationModule.instrumentationArgs.packageInfo,
-                        nowMs = initModule.clock.now(),
+                        activityManagerProvider = {
+                            instrumentationModule.instrumentationArgs.systemService(Context.ACTIVITY_SERVICE)
+                        },
                         prefsFileSizeProvider = { defaultPrefsFile(coreModule.context)?.length() },
-                    )
+                    ) {
+                        coreModule.context.applicationInfo?.sourceDir?.let { sourceDir ->
+                            ArtOptimizationState.create(
+                                apkPath = sourceDir,
+                                primaryAbi = initModule.systemInfo.primaryAbi,
+                                logger = initModule.logger,
+                            )
+                        }
+                    }
             },
         )
     }
