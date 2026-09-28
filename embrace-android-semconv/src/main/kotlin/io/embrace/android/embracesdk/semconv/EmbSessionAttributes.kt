@@ -53,12 +53,6 @@ object EmbSessionAttributes {
     const val EMB_ERROR_LOG_COUNT: String = "emb.error_log_count"
 
     /**
-     * Last known time that the session existed (nanoseconds since epoch).
-     */
-    @ExperimentalSemconv
-    const val EMB_HEARTBEAT_TIME_UNIX_NANO: String = "emb.heartbeat_time_unix_nano"
-
-    /**
      * Set to 1 when the session part belongs to a background user session, i.e. a user session covering a period when the app process is alive but the user is not active. Omitted for regular user sessions.
      */
     @ExperimentalSemconv
@@ -102,7 +96,6 @@ object EmbSessionAttributes {
 
     /**
      * UUID identifying the session part that the telemetry was recorded in. A user session is composed of one or more consecutive session parts.
-
      */
     @ExperimentalSemconv
     const val EMB_SESSION_PART_ID: String = "emb.session_part_id"
@@ -226,7 +219,6 @@ object EmbSessionAttributes {
 
     /**
      * UUID identifying the user session that the telemetry was recorded in.
-
      */
     @ExperimentalSemconv
     const val EMB_USER_SESSION_ID: String = "emb.user_session_id"

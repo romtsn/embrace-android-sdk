@@ -39,10 +39,9 @@ sealed class Worker(val threadName: String) {
         object PeriodicCacheWorker : Background("periodic-cache")
 
         /**
-         * Used to construct log messages. Log messages are sent to the server on a separate thread -
-         * the intention behind this is to offload unnecessary CPU work from the main thread.
+         * Used for writing session telemetry to the session-part directory.
          */
-        object LogMessageWorker : Background("log-message")
+        object SessionPersistenceWorker : Background("session-persistence")
 
         /**
          * Monitor thread that checks the main thread for thread blockages

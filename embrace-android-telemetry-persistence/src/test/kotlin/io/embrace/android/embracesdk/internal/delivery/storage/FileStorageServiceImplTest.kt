@@ -1,6 +1,7 @@
 package io.embrace.android.embracesdk.internal.delivery.storage
 
 import io.embrace.android.embracesdk.concurrency.BlockingScheduledExecutorService
+import io.embrace.android.embracesdk.concurrency.runConcurrently
 import io.embrace.android.embracesdk.fakes.FakeClock
 import io.embrace.android.embracesdk.fakes.FakeClock.Companion.DEFAULT_FAKE_CURRENT_TIME
 import io.embrace.android.embracesdk.fakes.FakeInternalLogger
@@ -17,6 +18,9 @@ import org.junit.Test
 import java.io.File
 import java.io.IOException
 import java.nio.file.Files
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class FileStorageServiceImplTest {
 
@@ -62,6 +66,21 @@ class FileStorageServiceImplTest {
         service.delete(fakeSessionStoredTelemetryMetadata)
         executor.queueCompletionTask()
         assertNull(service.loadPayloadAsStream(fakeSessionStoredTelemetryMetadata))
+    }
+
+    @Test
+    fun `payload size reports the bytes on disk`() {
+        storeDummyFile(fakeSessionStoredTelemetryMetadata)
+        assertEquals(
+            DUMMY_CONTENT.toByteArray().size.toLong(),
+            service.payloadSizeBytes(fakeSessionStoredTelemetryMetadata),
+        )
+    }
+
+    @Test
+    fun `payload size is zero for a payload that was never stored`() {
+        assertEquals(0L, service.payloadSizeBytes(fakeSessionStoredTelemetryMetadata))
+        assertTrue(logger.internalErrorMessages.isEmpty())
     }
 
     @Test
@@ -168,6 +187,22 @@ class FileStorageServiceImplTest {
     }
 
     @Test
+    fun `a stale temp file is reclaimed by the next store of the same payload`() {
+        // simulate a temp file left behind by a process killed mid-write
+        File(outputDir, "${fakeSessionStoredTelemetryMetadata.filename}.tmp").writeText("torn write")
+
+        storeDummyFile(fakeSessionStoredTelemetryMetadata)
+
+        service.loadPayloadAsStream(fakeSessionStoredTelemetryMetadata)?.use {
+            assertEquals(DUMMY_CONTENT, it.bufferedReader().readText())
+        }
+        assertEquals(
+            listOf(fakeSessionStoredTelemetryMetadata.filename),
+            outputDir.list()?.toList(),
+        )
+    }
+
+    @Test
     fun `unparseable files are swept when building the index`() {
         // simulate a payload written by a format this version can't parse
         val bogus = File(outputDir, "not-a-valid-name").apply { writeText("x") }
@@ -186,6 +221,117 @@ class FileStorageServiceImplTest {
         assertEquals(0, freshService.getStoredPayloads().size)
         assertFalse(bogus.exists())
         assertFalse(orphanTmp.exists())
+    }
+
+    @Test
+    fun `concurrent stores and deletes keep the index in sync with disk`() {
+        val threadCount = 8
+        val payloadsPerThread = 20
+        val deleteExecutor = Executors.newFixedThreadPool(4)
+        val concurrentService = FileStorageServiceImpl(
+            lazy { outputDir },
+            PriorityWorker(deleteExecutor),
+            logger,
+            clock,
+            maxAgeMs = MAX_AGE_MS,
+        )
+        val payloads = List(threadCount) { threadIndex ->
+            List(payloadsPerThread) { payloadIndex ->
+                StoredTelemetryMetadata(
+                    timestamp = clock.now(),
+                    uuid = "aaaaaaaa-0000-0000-${threadIndex.toString().padStart(4, '0')}-" +
+                        payloadIndex.toString().padStart(12, '0'),
+                    processIdentifier = "proc1",
+                    envelopeType = SupportedEnvelopeType.SESSION,
+                    complete = true,
+                    payloadType = PayloadType.SESSION,
+                )
+            }
+        }
+        // every odd-indexed payload deletes its even-indexed predecessor once stored
+        val deleted = payloads.flatMap { threadPayloads ->
+            threadPayloads.filterIndexed { index, _ -> index % 2 == 0 }
+        }.toSet()
+        val stored = payloads.flatten().toSet()
+        val deletesFinished = CountDownLatch(deleted.size)
+
+        try {
+            runConcurrently(threadCount) { threadIndex ->
+                val threadPayloads = payloads[threadIndex]
+                threadPayloads.forEachIndexed { index, metadata ->
+                    concurrentService.store(metadata) {
+                        it.write(DUMMY_CONTENT.toByteArray())
+                    }
+                    if (index % 2 == 1) {
+                        concurrentService.delete(threadPayloads[index - 1]) {
+                            deletesFinished.countDown()
+                        }
+                    }
+                }
+            }
+            // deletes complete asynchronously on the worker, so wait for them separately
+            assertTrue(deletesFinished.await(5, TimeUnit.SECONDS))
+        } finally {
+            deleteExecutor.shutdownNow()
+        }
+        assertTrue(logger.internalErrorMessages.isEmpty())
+
+        val indexedFilenames = concurrentService.getStoredPayloads().map { it.filename }.toSet()
+        val filenamesOnDisk = checkNotNull(outputDir.listFiles()).map { it.name }.toSet()
+        assertEquals(filenamesOnDisk, indexedFilenames)
+        assertEquals((stored - deleted).map { it.filename }.toSet(), indexedFilenames)
+    }
+
+    @Test
+    fun `payloads are pruned by count starting with the lowest priority envelope type`() {
+        val limited = createService(storageLimit = 2)
+        val crash = metadata("aaaaaaaa-0000-0000-0000-000000000001", SupportedEnvelopeType.CRASH)
+        val blob = metadata("aaaaaaaa-0000-0000-0000-000000000002", SupportedEnvelopeType.BLOB)
+        val session = metadata("aaaaaaaa-0000-0000-0000-000000000003", SupportedEnvelopeType.SESSION)
+        storeDummyFile(crash, limited)
+        storeDummyFile(blob, limited)
+        storeDummyFile(session, limited)
+
+        assertEquals(setOf(crash.uuid, session.uuid), limited.getStoredPayloads().map { it.uuid }.toSet())
+        assertNull(limited.loadPayloadAsStream(blob))
+    }
+
+    @Test
+    fun `a new payload is not written when it is the one pruned by count`() {
+        val limited = createService(storageLimit = 2)
+        val crash = metadata("aaaaaaaa-0000-0000-0000-000000000001", SupportedEnvelopeType.CRASH)
+        val session = metadata("aaaaaaaa-0000-0000-0000-000000000002", SupportedEnvelopeType.SESSION)
+        val blob = metadata("aaaaaaaa-0000-0000-0000-000000000003", SupportedEnvelopeType.BLOB)
+        storeDummyFile(crash, limited)
+        storeDummyFile(session, limited)
+        storeDummyFile(blob, limited)
+
+        assertEquals(setOf(crash.uuid, session.uuid), limited.getStoredPayloads().map { it.uuid }.toSet())
+        assertNull(limited.loadPayloadAsStream(blob))
+    }
+
+    private fun createService(storageLimit: Int) = FileStorageServiceImpl(
+        lazy { outputDir },
+        PriorityWorker(executor),
+        logger,
+        clock,
+        storageLimit = storageLimit,
+        maxAgeMs = MAX_AGE_MS,
+    )
+
+    private fun metadata(uuid: String, envelopeType: SupportedEnvelopeType) = StoredTelemetryMetadata(
+        timestamp = clock.now(),
+        uuid = uuid,
+        processIdentifier = "proc1",
+        envelopeType = envelopeType,
+        complete = true,
+        payloadType = PayloadType.SESSION,
+    )
+
+    private fun storeDummyFile(metadata: StoredTelemetryMetadata, service: FileStorageService) {
+        service.store(metadata) {
+            it.write(DUMMY_CONTENT.toByteArray())
+        }
     }
 
     private fun storeDummyFile(metadata: StoredTelemetryMetadata) {

@@ -7,11 +7,16 @@ import io.embrace.android.embracesdk.fakes.FakeConfigService
 import io.embrace.android.embracesdk.fakes.FakeDataSource
 import io.embrace.android.embracesdk.fakes.FakeInstrumentationArgs
 import io.embrace.android.embracesdk.fakes.FakeInstrumentationProvider
+import io.embrace.android.embracesdk.fakes.LazyInitStateDataSource
+import io.embrace.android.embracesdk.fakes.TestInstrumentationProvider
+import io.embrace.android.embracesdk.fakes.TestStateDataSource
+import io.embrace.android.embracesdk.fakes.TestStateValue
 import io.embrace.android.embracesdk.internal.arch.datasource.DataSource
 import io.embrace.android.embracesdk.internal.arch.datasource.DataSourceState
 import io.embrace.android.embracesdk.internal.arch.datasource.TelemetryDestination
 import io.embrace.android.embracesdk.internal.logging.InternalLoggerImpl
 import io.embrace.android.embracesdk.internal.worker.BackgroundWorker
+import io.embrace.android.embracesdk.semconv.EmbStateTransitionAttributes
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -120,6 +125,29 @@ internal class InstrumentationRegistryTest {
     }
 
     @Test
+    fun `current states include a value type only for active states whose current value is a system value`() {
+        val args = FakeInstrumentationArgs(ApplicationProvider.getApplicationContext())
+        registry.loadInstrumentations(listOf(TestInstrumentationProvider()), args)
+        val dataSource = checkNotNull(registry.findByType(TestStateDataSource::class))
+        assertEquals(mapOf(dataSource.stateAttributeKey to "UNKNOWN"), registry.getCurrentStates())
+
+        dataSource.onStateChange(TestStateValue.SystemValue("foo"), args.clock.tick())
+        assertEquals(
+            mapOf(
+                dataSource.stateAttributeKey to TestStateValue.SystemValue("foo"),
+                dataSource.stateValueTypeAttributeKey to EmbStateTransitionAttributes.EmbStateValueTypeValues.SYSTEM,
+            ),
+            registry.getCurrentStates(),
+        )
+
+        dataSource.onStateChange(TestStateValue.NonSystemValue("foo"), args.clock.tick())
+        assertEquals(
+            mapOf(dataSource.stateAttributeKey to TestStateValue.NonSystemValue("foo")),
+            registry.getCurrentStates(),
+        )
+    }
+
+    @Test
     fun `datasource iteration is threadsafe`() {
         val iterationStarted = CountDownLatch(1)
         val continueIteration = CountDownLatch(1)
@@ -151,6 +179,33 @@ internal class InstrumentationRegistryTest {
         assertEquals(1, newDataSource.sessionChanges)
     }
 
+    @Test
+    fun `getCurrentStates includes only active state sources`() {
+        val args = FakeInstrumentationArgs(ApplicationProvider.getApplicationContext())
+        val activeStateSource = TestStateDataSource(args)
+        val inactiveStateSource = LazyInitStateDataSource(args)
+        registry.add(DataSourceState({ activeStateSource }))
+        registry.add(DataSourceState({ inactiveStateSource }))
+        registry.add(DataSourceState({ dataSource }))
+        activeStateSource.onStateChange("active_value", 1000L)
+
+        // non-state sources and state sources that haven't started capturing are excluded
+        assertEquals(
+            mapOf(activeStateSource.stateAttributeKey to "active_value"),
+            registry.getCurrentStates(),
+        )
+
+        // a lazily-initialized state source is included once its first state change activates it
+        inactiveStateSource.onStateChange("lazy_value", 2000L)
+        assertEquals(
+            mapOf(
+                activeStateSource.stateAttributeKey to "active_value",
+                inactiveStateSource.stateAttributeKey to "lazy_value",
+            ),
+            registry.getCurrentStates(),
+        )
+    }
+
     private class BlockingTestDataSource(
         private val iterationStarted: CountDownLatch,
         private val mayContinue: CountDownLatch,
@@ -158,7 +213,6 @@ internal class InstrumentationRegistryTest {
         override val instrumentationName: String = "blocking_test_data_source"
 
         override fun onDataCaptureEnabled() {}
-        override fun onDataCaptureDisabled() {}
         override fun resetDataCaptureLimits() {}
         override fun <T> captureTelemetry(
             inputValidation: () -> Boolean,
