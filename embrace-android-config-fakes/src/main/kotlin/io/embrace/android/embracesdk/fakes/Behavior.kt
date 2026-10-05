@@ -1,36 +1,15 @@
 package io.embrace.android.embracesdk.fakes
 
-import io.embrace.android.embracesdk.internal.config.behavior.AppExitInfoBehavior
-import io.embrace.android.embracesdk.internal.config.behavior.AppExitInfoBehaviorImpl
-import io.embrace.android.embracesdk.internal.config.behavior.AutoDataCaptureBehavior
-import io.embrace.android.embracesdk.internal.config.behavior.AutoDataCaptureBehaviorImpl
-import io.embrace.android.embracesdk.internal.config.behavior.BackgroundActivityBehavior
-import io.embrace.android.embracesdk.internal.config.behavior.BackgroundActivityBehaviorImpl
 import io.embrace.android.embracesdk.internal.config.behavior.BehaviorThresholdCheck
-import io.embrace.android.embracesdk.internal.config.behavior.DataCaptureEventBehavior
-import io.embrace.android.embracesdk.internal.config.behavior.DataCaptureEventBehaviorImpl
-import io.embrace.android.embracesdk.internal.config.behavior.ExperimentBehavior
-import io.embrace.android.embracesdk.internal.config.behavior.ExperimentBehaviorImpl
-import io.embrace.android.embracesdk.internal.config.behavior.LogMessageBehavior
-import io.embrace.android.embracesdk.internal.config.behavior.LogMessageBehaviorImpl
 import io.embrace.android.embracesdk.internal.config.behavior.NetworkBehavior
 import io.embrace.android.embracesdk.internal.config.behavior.NetworkBehaviorImpl
 import io.embrace.android.embracesdk.internal.config.behavior.NetworkSpanForwardingBehavior
 import io.embrace.android.embracesdk.internal.config.behavior.NetworkSpanForwardingBehaviorImpl
 import io.embrace.android.embracesdk.internal.config.behavior.OtelBehaviorImpl
-import io.embrace.android.embracesdk.internal.config.behavior.PersistenceBehavior
-import io.embrace.android.embracesdk.internal.config.behavior.PersistenceBehaviorImpl
-import io.embrace.android.embracesdk.internal.config.behavior.SdkModeBehavior
-import io.embrace.android.embracesdk.internal.config.behavior.SdkModeBehaviorImpl
-import io.embrace.android.embracesdk.internal.config.behavior.SensitiveKeysBehaviorImpl
-import io.embrace.android.embracesdk.internal.config.behavior.ThreadBlockageBehavior
-import io.embrace.android.embracesdk.internal.config.behavior.ThreadBlockageBehaviorImpl
 import io.embrace.android.embracesdk.internal.config.behavior.TraceparentInjectionBehavior
 import io.embrace.android.embracesdk.internal.config.behavior.TraceparentInjectionBehaviorImpl
 import io.embrace.android.embracesdk.internal.config.behavior.UserSessionBehavior
 import io.embrace.android.embracesdk.internal.config.behavior.UserSessionBehaviorImpl
-import io.embrace.android.embracesdk.internal.config.behavior.VitalsBehavior
-import io.embrace.android.embracesdk.internal.config.behavior.VitalsBehaviorImpl
 import io.embrace.android.embracesdk.internal.config.instrumented.InstrumentedConfigImpl
 import io.embrace.android.embracesdk.internal.config.remote.RemoteConfig
 
@@ -41,22 +20,6 @@ private val behaviorThresholdCheck = BehaviorThresholdCheck {
 }
 
 /**
- * A [ThreadBlockageBehavior] that returns default values.
- */
-fun createThreadBlockageBehavior(
-    thresholdCheck: BehaviorThresholdCheck = behaviorThresholdCheck,
-    remoteCfg: RemoteConfig? = null,
-): ThreadBlockageBehavior = ThreadBlockageBehaviorImpl(thresholdCheck, remoteCfg)
-
-/**
- * A [VitalsBehaviorImpl] that returns default values.
- */
-fun createVitalsBehavior(
-    thresholdCheck: BehaviorThresholdCheck = behaviorThresholdCheck,
-    remoteCfg: RemoteConfig? = null,
-): VitalsBehavior = VitalsBehaviorImpl(thresholdCheck, remoteCfg)
-
-/**
  * A [UserSessionBehaviorImpl] that returns default values.
  */
 fun createSessionBehavior(
@@ -64,65 +27,13 @@ fun createSessionBehavior(
 ): UserSessionBehavior = UserSessionBehaviorImpl(remoteCfg)
 
 /**
- * An [ExperimentBehaviorImpl] that returns default values.
- */
-fun createExperimentBehavior(
-    remoteCfg: RemoteConfig? = null,
-): ExperimentBehavior = ExperimentBehaviorImpl(remoteCfg)
-
-/**
  * A [NetworkBehaviorImpl] that returns default values.
  */
 fun createNetworkBehavior(
     remoteCfg: RemoteConfig? = null,
     disabledUrlPatterns: List<String>? = null,
-): NetworkBehavior = NetworkBehaviorImpl(InstrumentedConfigImpl, remoteCfg, disabledUrlPatterns)
-
-/**
- * A [BackgroundActivityBehaviorImpl] that returns default values.
- */
-fun createBackgroundActivityBehavior(
-    thresholdCheck: BehaviorThresholdCheck = behaviorThresholdCheck,
-    remoteCfg: RemoteConfig? = null,
-): BackgroundActivityBehavior = BackgroundActivityBehaviorImpl(thresholdCheck, InstrumentedConfigImpl, remoteCfg)
-
-/**
- * A [AutoDataCaptureBehaviorImpl] that returns default values.
- */
-fun createAutoDataCaptureBehavior(
-    thresholdCheck: BehaviorThresholdCheck = behaviorThresholdCheck,
-    remoteCfg: RemoteConfig? = null,
-): AutoDataCaptureBehavior = AutoDataCaptureBehaviorImpl(thresholdCheck, InstrumentedConfigImpl, remoteCfg)
-
-/**
- * A [LogMessageBehaviorImpl] that returns default values.
- */
-fun createLogMessageBehavior(
-    remoteCfg: RemoteConfig? = null,
-): LogMessageBehavior = LogMessageBehaviorImpl(remoteCfg)
-
-/**
- * A [DataCaptureEventBehaviorImpl] that returns default values.
- */
-fun createDataCaptureEventBehavior(
-    remoteCfg: RemoteConfig? = null,
-): DataCaptureEventBehavior = DataCaptureEventBehaviorImpl(remoteCfg)
-
-/**
- * A [SdkModeBehaviorImpl] that returns default values.
- */
-fun createSdkModeBehavior(
-    thresholdCheck: BehaviorThresholdCheck = behaviorThresholdCheck,
-    remoteCfg: RemoteConfig? = null,
-): SdkModeBehavior = SdkModeBehaviorImpl(thresholdCheck, remoteCfg)
-
-/**
- * A [AppExitInfoBehavior] that returns default values.
- */
-fun createAppExitInfoBehavior(
-    thresholdCheck: BehaviorThresholdCheck = behaviorThresholdCheck,
-    remoteCfg: RemoteConfig? = null,
-): AppExitInfoBehavior = AppExitInfoBehaviorImpl(thresholdCheck, InstrumentedConfigImpl, remoteCfg)
+    configDeliveredAt: Long = FakeClock.DEFAULT_FAKE_CURRENT_TIME,
+): NetworkBehavior = NetworkBehaviorImpl(InstrumentedConfigImpl, remoteCfg, configDeliveredAt, disabledUrlPatterns)
 
 /**
  * A [TraceparentInjectionBehaviorImpl] that returns default values.
@@ -143,22 +54,9 @@ fun createNetworkSpanForwardingBehavior(
     NetworkSpanForwardingBehaviorImpl(traceparentInjectionBehavior, thresholdCheck, InstrumentedConfigImpl, remoteConfig)
 
 /**
- * A [SensitiveKeysBehaviorImpl] that returns default values.
- */
-fun createSensitiveKeysBehavior() = SensitiveKeysBehaviorImpl(InstrumentedConfigImpl)
-
-/**
  * An [OtelBehaviorImpl] that returns default values.
  */
 fun createOtelBehavior(
     thresholdCheck: BehaviorThresholdCheck = behaviorThresholdCheck,
     remoteCfg: RemoteConfig? = null,
 ) = OtelBehaviorImpl(thresholdCheck, InstrumentedConfigImpl, remoteCfg)
-
-/**
- * A [PersistenceBehaviorImpl] that returns default values.
- */
-fun createPersistenceBehavior(
-    thresholdCheck: BehaviorThresholdCheck = behaviorThresholdCheck,
-    remoteCfg: RemoteConfig? = null,
-): PersistenceBehavior = PersistenceBehaviorImpl(thresholdCheck, InstrumentedConfigImpl, remoteCfg)

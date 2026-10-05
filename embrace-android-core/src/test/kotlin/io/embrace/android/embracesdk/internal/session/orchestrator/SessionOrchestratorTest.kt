@@ -23,12 +23,9 @@ import io.embrace.android.embracesdk.fakes.FakeTelemetryService
 import io.embrace.android.embracesdk.fakes.FakeUserSessionPropertiesService
 import io.embrace.android.embracesdk.fakes.TestUuidSource
 import io.embrace.android.embracesdk.fakes.behavior.FakeUserSessionBehavior
-import io.embrace.android.embracesdk.fakes.createBackgroundActivityBehavior
-import io.embrace.android.embracesdk.fakes.createPersistenceBehavior
 import io.embrace.android.embracesdk.fakes.injection.FakePayloadSourceModule
 import io.embrace.android.embracesdk.internal.arch.InstrumentationRegistry
 import io.embrace.android.embracesdk.internal.arch.InstrumentationRegistryImpl
-import io.embrace.android.embracesdk.internal.arch.datasource.DataSourceState
 import io.embrace.android.embracesdk.internal.arch.startup.StartupClassifierImpl
 import io.embrace.android.embracesdk.internal.arch.startup.StartupType
 import io.embrace.android.embracesdk.internal.arch.state.ProcessState
@@ -36,8 +33,9 @@ import io.embrace.android.embracesdk.internal.capture.session.PropertyScope
 import io.embrace.android.embracesdk.internal.capture.session.UserSessionPropertiesService
 import io.embrace.android.embracesdk.internal.clock.millisToNanos
 import io.embrace.android.embracesdk.internal.clock.nanosToMillis
-import io.embrace.android.embracesdk.internal.config.remote.BackgroundActivityRemoteConfig
-import io.embrace.android.embracesdk.internal.config.remote.RemoteConfig
+import io.embrace.android.embracesdk.internal.config.resolved.BackgroundActivityConfig
+import io.embrace.android.embracesdk.internal.config.resolved.EmbraceConfig
+import io.embrace.android.embracesdk.internal.config.resolved.PersistenceConfig
 import io.embrace.android.embracesdk.internal.delivery.caching.PayloadCachingService
 import io.embrace.android.embracesdk.internal.delivery.caching.PayloadCachingServiceImpl
 import io.embrace.android.embracesdk.internal.logging.InternalErrorType
@@ -302,7 +300,7 @@ internal class SessionOrchestratorTest {
     fun `backgrounding with background activity disabled caches empty crash envelope`() {
         createOrchestrator(
             startingProcessState = ProcessState.FOREGROUND,
-            configService = FakeConfigService(backgroundActivityBehavior = backgroundActivityBehavior(false)),
+            configService = FakeConfigService(config = backgroundActivityConfig(false)),
         )
         orchestrator.onBackground()
         assertEquals(1, store.cachedEmptyCrashPayloads.size)
@@ -312,7 +310,7 @@ internal class SessionOrchestratorTest {
     fun `foregrounding with background activity disabled does not cache empty crash envelope`() {
         createOrchestrator(
             startingProcessState = ProcessState.BACKGROUND,
-            configService = FakeConfigService(backgroundActivityBehavior = backgroundActivityBehavior(false)),
+            configService = FakeConfigService(config = backgroundActivityConfig(false)),
         )
         orchestrator.onForeground()
         assertTrue(store.cachedEmptyCrashPayloads.isEmpty())
@@ -344,7 +342,7 @@ internal class SessionOrchestratorTest {
         assertEquals(1, payloadCollator.sessionCount.get())
         orchestrator.endSessionWithManual()
         assertEquals(2, payloadCollator.sessionCount.get())
-        checkNotNull(store.storedSessionPartPayloads.last().first)
+        checkNotNull(store.storedSessionPartPayloads.last())
     }
 
     @Test
@@ -357,7 +355,7 @@ internal class SessionOrchestratorTest {
 
         orchestrator.endSessionWithManual()
         assertEquals(2, payloadCollator.sessionCount.get())
-        checkNotNull(store.storedSessionPartPayloads.last().first)
+        checkNotNull(store.storedSessionPartPayloads.last())
     }
 
     @Test
@@ -444,7 +442,7 @@ internal class SessionOrchestratorTest {
     fun `test session part span cold start`() {
         createOrchestrator(ProcessState.BACKGROUND)
         orchestrator.onForeground()
-        checkNotNull(store.storedSessionPartPayloads.last().first)
+        checkNotNull(store.storedSessionPartPayloads.last())
     }
 
     @Test
@@ -452,7 +450,7 @@ internal class SessionOrchestratorTest {
         createOrchestrator(ProcessState.BACKGROUND)
         orchestrator.onForeground()
         orchestrator.onBackground()
-        checkNotNull(store.storedSessionPartPayloads.last().first)
+        checkNotNull(store.storedSessionPartPayloads.last())
     }
 
     @Test
@@ -460,7 +458,7 @@ internal class SessionOrchestratorTest {
         createOrchestrator(ProcessState.BACKGROUND)
         orchestrator.onForeground()
         orchestrator.handleCrash("my-crash-id")
-        checkNotNull(store.storedSessionPartPayloads.last().first)
+        checkNotNull(store.storedSessionPartPayloads.last())
     }
 
     @Test
@@ -499,7 +497,7 @@ internal class SessionOrchestratorTest {
         createOrchestrator(
             startingProcessState = ProcessState.FOREGROUND,
             configService = FakeConfigService(
-                backgroundActivityBehavior = backgroundActivityBehavior(true),
+                config = backgroundActivityConfig(true),
             ),
         )
         orchestrator.onBackground()
@@ -1012,9 +1010,7 @@ internal class SessionOrchestratorTest {
 
     @Test
     fun `no session part directory is created when a new session part is not started`() {
-        val configService = multiFilePersistenceConfigService().apply {
-            backgroundActivityBehavior = backgroundActivityBehavior(false)
-        }
+        val configService = multiFilePersistenceConfigService(backgroundActivity = false)
         createOrchestrator(ProcessState.FOREGROUND, configService)
         val initial = sessionPartDirs().single()
 
@@ -1063,9 +1059,7 @@ internal class SessionOrchestratorTest {
 
     @Test
     fun `a session part that ends without a new part starting still records its end time`() {
-        val configService = multiFilePersistenceConfigService().apply {
-            backgroundActivityBehavior = backgroundActivityBehavior(false)
-        }
+        val configService = multiFilePersistenceConfigService(backgroundActivity = false)
         createOrchestrator(ProcessState.FOREGROUND, configService)
         val sessionPartId = checkNotNull(sessionTracker.getActiveSessionPartId())
         clock.tick(10000)
@@ -1128,7 +1122,7 @@ internal class SessionOrchestratorTest {
     private fun createOrchestrator(
         startingProcessState: ProcessState,
         configService: FakeConfigService =
-            FakeConfigService(backgroundActivityBehavior = backgroundActivityBehavior(true)),
+            FakeConfigService(config = backgroundActivityConfig(true)),
         ordinalStoreOverride: OrdinalStore? = null,
         metadataStoreOverride: UserSessionMetadataStore? = null,
         keyValueStoreOverride: KeyValueStore? = null,
@@ -1172,12 +1166,7 @@ internal class SessionOrchestratorTest {
         instrumentationRegistry = InstrumentationRegistryImpl(
             logger,
         ).apply {
-            add(
-                DataSourceState(
-                    factory = { fakeDataSource },
-                    configGate = { true },
-                ),
-            )
+            add { fakeDataSource }
         }
 
         val sessionPartWriter = SessionPartWriterImpl(
@@ -1405,7 +1394,7 @@ internal class SessionOrchestratorTest {
         createOrchestrator(
             startingProcessState = ProcessState.FOREGROUND,
             configService = FakeConfigService(
-                backgroundActivityBehavior = backgroundActivityBehavior(true),
+                config = backgroundActivityConfig(true),
                 sessionBehavior = FakeUserSessionBehavior(
                     maxSessionDurationMs = maxDurationMs,
                     sessionInactivityTimeoutMs = maxDurationMs * 4,
@@ -1936,7 +1925,7 @@ internal class SessionOrchestratorTest {
     }
 
     private fun backgroundEnabledConfigService() = FakeConfigService(
-        backgroundActivityBehavior = backgroundActivityBehavior(true),
+        config = backgroundActivityConfig(true),
         sessionBehavior = FakeUserSessionBehavior(
             maxSessionDurationMs = maxDurationMs,
             sessionInactivityTimeoutMs = inactivityMs,
@@ -1944,7 +1933,7 @@ internal class SessionOrchestratorTest {
     )
 
     private fun backgroundDisabledConfigService() = FakeConfigService(
-        backgroundActivityBehavior = backgroundActivityBehavior(false),
+        config = backgroundActivityConfig(false),
         sessionBehavior = FakeUserSessionBehavior(
             maxSessionDurationMs = maxDurationMs,
             sessionInactivityTimeoutMs = inactivityMs,
@@ -1961,17 +1950,8 @@ internal class SessionOrchestratorTest {
         ),
     )
 
-    private fun backgroundActivityBehavior(enabled: Boolean) = createBackgroundActivityBehavior(
-        remoteCfg = RemoteConfig(
-            backgroundActivityConfig = BackgroundActivityRemoteConfig(
-                threshold = if (enabled) {
-                    100f
-                } else {
-                    0f
-                },
-            ),
-        ),
-    )
+    private fun backgroundActivityConfig(enabled: Boolean) =
+        EmbraceConfig(backgroundActivity = { BackgroundActivityConfig(captureEnabled = { enabled }) })
 
     private fun storeWithUserSession(
         userSessionId: String,
@@ -1997,10 +1977,10 @@ internal class SessionOrchestratorTest {
         )
     }
 
-    private fun multiFilePersistenceConfigService() = FakeConfigService(
-        backgroundActivityBehavior = backgroundActivityBehavior(true),
-        persistenceBehavior = createPersistenceBehavior(
-            remoteCfg = RemoteConfig(pctMultiFilePersistenceEnabled = 100.0f),
+    private fun multiFilePersistenceConfigService(backgroundActivity: Boolean = true) = FakeConfigService(
+        config = EmbraceConfig(
+            backgroundActivity = { BackgroundActivityConfig(captureEnabled = { backgroundActivity }) },
+            persistence = { PersistenceConfig(multiFileEnabled = { true }) },
         ),
     )
 

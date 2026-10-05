@@ -9,6 +9,8 @@ import io.embrace.android.embracesdk.internal.otel.config.getMaxTotalLinkCount
 import io.embrace.android.embracesdk.internal.otel.createSdkOtelInstance
 import io.embrace.android.embracesdk.internal.otel.impl.EmbOpenTelemetry
 import io.embrace.android.embracesdk.internal.otel.impl.EmbTracerProvider
+import io.embrace.android.embracesdk.internal.otel.logs.PrivateTelemetryFilteringLogRecordProcessor
+import io.embrace.android.embracesdk.internal.otel.spans.PrivateTelemetryFilteringSpanProcessor
 import io.embrace.android.embracesdk.internal.otel.spans.SpanService
 import io.embrace.android.embracesdk.internal.utils.EmbTrace
 import io.opentelemetry.kotlin.Clock
@@ -32,10 +34,10 @@ class OtelSdkWrapper(
 ) {
 
     init {
-        if (!useKotlinSdk) {
-            // Enforce the use of default OTel Java SDK ThreadLocal ContextStorage to bypass SPI looking that violates Android strict mode
-            System.setProperty("io.opentelemetry.context.contextStorageProvider", "default")
-        }
+        // Enforce the use of default OTel Java SDK ThreadLocal ContextStorage to bypass SPI lookup that violates Android strict mode.
+        // This applies even when the Kotlin SDK is used, as the Java context API is still reached via getJavaOpenTelemetry()
+        // and any customer code that uses OTel Java directly.
+        System.setProperty("io.opentelemetry.context.contextStorageProvider", "default")
     }
 
     val sdkTracer: Tracer by lazy {
@@ -69,6 +71,7 @@ class OtelSdkWrapper(
                 }
                 export {
                     val processors = listOf(configuration.spanProcessor) + configuration.getExternalSpanProcessors()
+                        .map(::PrivateTelemetryFilteringSpanProcessor)
                     compositeSpanProcessor(*processors.toTypedArray())
                 }
             },
@@ -79,6 +82,7 @@ class OtelSdkWrapper(
                 }
                 export {
                     val processors = listOf(configuration.logRecordProcessor) + configuration.getExternalLogRecordProcessors()
+                        .map(::PrivateTelemetryFilteringLogRecordProcessor)
                     compositeLogRecordProcessor(*processors.toTypedArray())
                 }
             },

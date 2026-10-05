@@ -199,6 +199,14 @@ A variant of (1): two payloads stored at the **same fake-clock instant** tie on 
 
 ---
 
+## Baseline Profile
+
+`embrace-android-sdk/src/main/baseline-prof.txt` ships in the AAR and is merged into every consumer app's profile.
+If a dependency has been added or removed, review the baseline profile generation to see whether the generation
+rules need updating to account for the new dependency.
+
+---
+
 ## PR Guidelines
 
 From `CONTRIBUTING.md`:
@@ -233,7 +241,8 @@ From `CONTRIBUTING.md`:
 ### Adding a New Payload Model
 
 1. Add to `embrace-android-payload` module
-2. Use Moshi annotations: `@JsonClass(generateAdapter = true)` and `@Json(name = "...")`
+2. Use kotlinx.serialization annotations: `@Serializable` and `@SerialName("...")`, and pass the generated
+   serializer explicitly (e.g. `Foo.serializer()`); never resolve serializers at runtime
 3. Use `data class` with `val` properties (immutability enforced by detekt)
 4. No business logic in payload classes (enforced by detekt)
 

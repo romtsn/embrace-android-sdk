@@ -1,7 +1,7 @@
 package io.embrace.android.embracesdk.testcases
 
-import androidx.test.ext.junit.runners.AndroidJUnit4
 import io.embrace.android.embracesdk.Severity
+import io.embrace.android.embracesdk.assertions.getLogWithAttributeValue
 import io.embrace.android.embracesdk.fakes.FakeLogRecordExporter
 import io.embrace.android.embracesdk.fakes.FakeLogRecordProcessor
 import io.embrace.android.embracesdk.fakes.FakeOtelJavaLogRecordExporter
@@ -14,27 +14,36 @@ import io.embrace.android.embracesdk.fakes.config.FakeInstrumentedConfig
 import io.embrace.android.embracesdk.fakes.config.FakeProjectConfig
 import io.embrace.android.embracesdk.internal.arch.schema.EmbType
 import io.embrace.android.embracesdk.internal.clock.millisToNanos
+import io.embrace.android.embracesdk.internal.logging.InternalErrorType
+import io.embrace.android.embracesdk.internal.logging.InternalLogger
 import io.embrace.android.embracesdk.internal.toStringMap
 import io.embrace.android.embracesdk.otel.java.addJavaLogRecordExporter
 import io.embrace.android.embracesdk.otel.java.addJavaLogRecordProcessor
 import io.embrace.android.embracesdk.otel.java.addJavaSpanExporter
 import io.embrace.android.embracesdk.otel.java.addJavaSpanProcessor
+import io.embrace.android.embracesdk.testframework.OtelSdkMode
 import io.embrace.android.embracesdk.testframework.SdkIntegrationTestRule
+import io.opentelemetry.kotlin.semconv.ExceptionAttributes
 import io.opentelemetry.kotlin.semconv.ServiceAttributes
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.ParameterizedRobolectricTestRunner
 
 @Suppress("DEPRECATION")
-@RunWith(AndroidJUnit4::class)
-internal class OTelExportTest {
+@RunWith(ParameterizedRobolectricTestRunner::class)
+internal class OTelExportTest(
+    private val otelSdkMode: OtelSdkMode,
+) {
 
     @Rule
     @JvmField
-    val testRule: SdkIntegrationTestRule = SdkIntegrationTestRule()
+    val testRule: SdkIntegrationTestRule = SdkIntegrationTestRule(otelSdkMode = otelSdkMode)
 
     @Test
     fun `session part span exported to user-supplied exporter`() {
@@ -157,6 +166,47 @@ internal class OTelExportTest {
     }
 
     @Test
+    fun `private telemetry is not passed to user-supplied processors or exporters`() {
+        val spanProcessor = FakeSpanProcessor()
+        val logProcessor = FakeLogRecordProcessor()
+        val spanExporter = FakeSpanExporter()
+        val logExporter = FakeLogRecordExporter()
+        lateinit var logger: InternalLogger
+
+        testRule.runTest(
+            setupAction = {
+                logger = getEmbLogger().apply { throwOnInternalError = false }
+            },
+            preSdkStartAction = {
+                embrace.addSpanProcessor(spanProcessor)
+                embrace.addLogRecordProcessor(logProcessor)
+                embrace.addSpanExporter(spanExporter)
+                embrace.addLogRecordExporter(logExporter)
+            },
+            testCaseAction = {
+                recordSession {
+                    embrace.startSpan("public-span").stop()
+                    embrace.logMessage("public-log", Severity.INFO)
+                    logger.trackInternalError(InternalErrorType.InternalInterfaceFail, RuntimeException("internal"))
+                }
+            },
+            assertAction = {
+                assertNotNull(getSingleLogEnvelope().getLogWithAttributeValue(ExceptionAttributes.EXCEPTION_MESSAGE, "internal"))
+                assertNotNull(getSingleSessionEnvelope())
+
+                assertEquals(listOf("public-log"), logProcessor.processedLogBodies)
+                assertTrue(spanProcessor.endedSpanNames.containsAll(listOf("public-span", "emb-session")))
+                assertFalse((spanProcessor.startedSpanNames + spanProcessor.endedSpanNames).contains("emb-sdk-init"))
+
+                assertEquals(listOf("public-log"), logExporter.exportedLogs.map { it.body })
+                val exportedSpanNames = spanExporter.exportedSpans.map { it.name }
+                assertTrue(exportedSpanNames.containsAll(listOf("public-span", "emb-session")))
+                assertFalse(exportedSpanNames.contains("emb-sdk-init"))
+            }
+        )
+    }
+
+    @Test
     fun `span exported to user-supplied SpanExporter using Java API`() {
         val exporter = FakeOtelJavaSpanExporter()
         val spanName = "test-java-exporter-span"
@@ -201,6 +251,8 @@ internal class OTelExportTest {
 
     @Test
     fun `span exported to user-supplied SpanProcessor using Java API`() {
+        // TODO: future: opentelemetry-kotlin's SpanProcessorAdapter only forwards compat spans, so regular mode drops them
+        assumeTrue(otelSdkMode == OtelSdkMode.COMPAT)
         val processor = FakeOtelJavaSpanProcessor()
         val spanName = "test-java-processor-span"
 
@@ -223,6 +275,8 @@ internal class OTelExportTest {
 
     @Test
     fun `log record exported to user-supplied LogRecordProcessor using Java API`() {
+        // TODO: future: opentelemetry-kotlin's LogRecordProcessorAdapter only forwards compat logs, so regular mode drops them
+        assumeTrue(otelSdkMode == OtelSdkMode.COMPAT)
         val processor = FakeOtelJavaLogRecordProcessor()
 
         testRule.runTest(
@@ -425,5 +479,11 @@ internal class OTelExportTest {
                 assertEquals(listOf("a", "b", "c"), calls)
             }
         )
+    }
+
+    internal companion object {
+        @JvmStatic
+        @ParameterizedRobolectricTestRunner.Parameters(name = "{0}")
+        fun modes(): List<Array<Any>> = OtelSdkMode.parameters()
     }
 }

@@ -5,16 +5,16 @@ import io.embrace.android.embracesdk.fakes.FakePayloadStore
 import io.embrace.android.embracesdk.fakes.FakeTelemetryDestination
 import io.embrace.android.embracesdk.fakes.FakeTelemetryService
 import io.embrace.android.embracesdk.fakes.FakeUserSessionPropertiesService
-import io.embrace.android.embracesdk.fakes.behavior.FakeLogMessageBehavior
-import io.embrace.android.embracesdk.fakes.config.FakeInstrumentedConfig
-import io.embrace.android.embracesdk.fakes.config.FakeRedactionConfig
 import io.embrace.android.embracesdk.internal.arch.datasource.LogSeverity
 import io.embrace.android.embracesdk.internal.arch.schema.SchemaType.Log
 import io.embrace.android.embracesdk.internal.config.behavior.REDACTED_LABEL
-import io.embrace.android.embracesdk.internal.config.behavior.SensitiveKeysBehaviorImpl
+import io.embrace.android.embracesdk.internal.config.resolved.EmbraceConfig
+import io.embrace.android.embracesdk.internal.config.resolved.LogConfig
+import io.embrace.android.embracesdk.internal.config.resolved.SensitiveKeysConfig
 import io.embrace.android.embracesdk.internal.payload.AppFramework
 import io.embrace.android.embracesdk.internal.telemetry.AppliedLimitType
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -32,8 +32,8 @@ internal class EmbraceLogServiceTest {
     @Before
     fun setUp() {
         fakeConfigService = FakeConfigService(
-            sensitiveKeysBehavior = SensitiveKeysBehaviorImpl(
-                FakeInstrumentedConfig(redaction = FakeRedactionConfig(sensitiveKeys = listOf("password"))),
+            config = EmbraceConfig(
+                sensitiveKeys = { SensitiveKeysConfig(denylist = { listOf("password") }) },
             ),
         )
         fakeUserSessionPropertiesService = FakeUserSessionPropertiesService()
@@ -71,10 +71,14 @@ internal class EmbraceLogServiceTest {
         // given a config with log limits
         val testLogLimit = 5
         fakeConfigService = FakeConfigService(
-            logMessageBehavior = FakeLogMessageBehavior(
-                infoLogLimit = testLogLimit,
-                warnLogLimit = testLogLimit,
-                errorLogLimit = testLogLimit,
+            config = EmbraceConfig(
+                log = {
+                    LogConfig(
+                        infoLimit = { testLogLimit },
+                        warnLimit = { testLogLimit },
+                        errorLimit = { testLogLimit },
+                    )
+                },
             ),
         )
         logLimitingService = LogLimitingServiceImpl(fakeConfigService)
@@ -109,7 +113,7 @@ internal class EmbraceLogServiceTest {
     fun `a max length smaller than 3 does not add ellipsis`() {
         // given a config with a log message limit smaller than 3
         fakeConfigService = FakeConfigService(
-            logMessageBehavior = FakeLogMessageBehavior(logMessageMaximumAllowedLength = 2),
+            config = EmbraceConfig(log = { LogConfig(maxMessageLength = { 2 }) }),
         )
         logService = createEmbraceLogService()
 
@@ -125,7 +129,7 @@ internal class EmbraceLogServiceTest {
     fun `a log message bigger than the max length is trimmed`() {
         // given a config with message limit
         fakeConfigService = FakeConfigService(
-            logMessageBehavior = FakeLogMessageBehavior(logMessageMaximumAllowedLength = 5),
+            config = EmbraceConfig(log = { LogConfig(maxMessageLength = { 5 }) }),
         )
         logService = createEmbraceLogService()
 
@@ -146,7 +150,7 @@ internal class EmbraceLogServiceTest {
         // given a config with message limit and app framework Unity
         fakeConfigService = FakeConfigService(
             appFramework = AppFramework.UNITY,
-            logMessageBehavior = FakeLogMessageBehavior(logMessageMaximumAllowedLength = 5),
+            config = EmbraceConfig(log = { LogConfig(maxMessageLength = { 5 }) }),
         )
         logService = createEmbraceLogService()
 
@@ -213,6 +217,34 @@ internal class EmbraceLogServiceTest {
         assertTrue(fakeTelemetryService.appliedLimits.contains("log_attribute_key" to AppliedLimitType.TRUNCATE_STRING))
         assertTrue(
             fakeTelemetryService.appliedLimits.contains("log_attribute_value" to AppliedLimitType.TRUNCATE_STRING),
+        )
+    }
+
+    @Test
+    fun `non-string values keep their type unless their payload string is over the limit`() {
+        val bytes = byteArrayOf(1, 2)
+        val longList = List(300) { "abcde" }
+        logService.log(
+            message = "message",
+            severity = LogSeverity.INFO,
+            attributes = mapOf(
+                "long" to 5L,
+                "bool" to true,
+                "list" to listOf("a", "b"),
+                "bytes" to bytes,
+                "longList" to longList,
+            ),
+            schemaProvider = ::Log,
+        )
+        val attributes = destination.logEvents.single().schemaType.attributes()
+        assertEquals(5L, attributes["long"])
+        assertEquals(true, attributes["bool"])
+        assertEquals(listOf("a", "b"), attributes["list"])
+        assertSame(bytes, attributes["bytes"])
+        assertEquals(longList.toString().take(1021) + "...", attributes["longList"])
+        assertEquals(
+            1,
+            fakeTelemetryService.appliedLimits.count { it == "log_attribute_value" to AppliedLimitType.TRUNCATE_STRING },
         )
     }
 

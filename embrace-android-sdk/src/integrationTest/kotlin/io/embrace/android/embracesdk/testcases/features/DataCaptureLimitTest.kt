@@ -1,29 +1,31 @@
 package io.embrace.android.embracesdk.testcases.features
 
-import androidx.test.ext.junit.runners.AndroidJUnit4
 import io.embrace.android.embracesdk.assertions.findEventsOfType
 import io.embrace.android.embracesdk.assertions.findSessionPartSpan
 import io.embrace.android.embracesdk.internal.arch.schema.EmbType
-import io.embrace.android.embracesdk.internal.config.behavior.BreadcrumbBehavior
-import io.embrace.android.embracesdk.internal.config.behavior.BreadcrumbBehavior.Companion.DEFAULT_BREADCRUMB_LIMIT
 import io.embrace.android.embracesdk.internal.config.behavior.OtelBehavior
 import io.embrace.android.embracesdk.internal.config.remote.DataRemoteConfig
 import io.embrace.android.embracesdk.internal.config.remote.RemoteConfig
 import io.embrace.android.embracesdk.internal.config.remote.UiRemoteConfig
+import io.embrace.android.embracesdk.internal.config.resolved.BreadcrumbConfig
 import io.embrace.android.embracesdk.internal.payload.Envelope
 import io.embrace.android.embracesdk.internal.payload.SessionPartPayload
+import io.embrace.android.embracesdk.testframework.OtelSdkMode
 import io.embrace.android.embracesdk.testframework.SdkIntegrationTestRule
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.ParameterizedRobolectricTestRunner
 
-@RunWith(AndroidJUnit4::class)
-internal class DataCaptureLimitTest {
+@RunWith(ParameterizedRobolectricTestRunner::class)
+internal class DataCaptureLimitTest(
+    private val otelSdkMode: OtelSdkMode,
+) {
 
     @Rule
     @JvmField
-    val testRule: SdkIntegrationTestRule = SdkIntegrationTestRule()
+    val testRule: SdkIntegrationTestRule = SdkIntegrationTestRule(otelSdkMode = otelSdkMode)
 
     @Test
     fun `data capture limit reset between sessions`() {
@@ -50,13 +52,13 @@ internal class DataCaptureLimitTest {
     }
 
     /**
-     * The session span caps breadcrumbs at [BreadcrumbBehavior.getCustomBreadcrumbLimit] as well as the breadcrumb data
-     * source. Raising the remote limit above [DEFAULT_BREADCRUMB_LIMIT] proves that the session span reads the
+     * The session span caps breadcrumbs at [BreadcrumbConfig.customLimit] as well as the breadcrumb data
+     * source. Raising the remote limit above [BreadcrumbConfig.DEFAULT_LIMIT] proves that the session span reads the
      * configured value rather than falling back to the default.
      */
     @Test
     fun `remotely raised breadcrumb limit is honoured by the session span`() {
-        val raisedLimit = DEFAULT_BREADCRUMB_LIMIT + 50
+        val raisedLimit = BreadcrumbConfig.DEFAULT_LIMIT + 50
         testRule.runTest(
             persistedRemoteConfig = RemoteConfig(uiConfig = UiRemoteConfig(breadcrumbs = raisedLimit)),
             testCaseAction = {
@@ -98,6 +100,12 @@ internal class DataCaptureLimitTest {
     private fun assertBreadcrumbsMatchLimit(envelope: Envelope<SessionPartPayload>) {
         val sessionPartSpan = envelope.findSessionPartSpan()
         val crumbs = sessionPartSpan.findEventsOfType(EmbType.System.Breadcrumb)
-        assertEquals(DEFAULT_BREADCRUMB_LIMIT, crumbs.size)
+        assertEquals(BreadcrumbConfig.DEFAULT_LIMIT, crumbs.size)
+    }
+
+    internal companion object {
+        @JvmStatic
+        @ParameterizedRobolectricTestRunner.Parameters(name = "{0}")
+        fun modes(): List<Array<Any>> = OtelSdkMode.parameters()
     }
 }

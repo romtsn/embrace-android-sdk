@@ -4,7 +4,7 @@ import io.embrace.android.embracesdk.fakes.FakeClock
 import io.embrace.android.embracesdk.fakes.FakeEmbraceSdkSpan
 import io.embrace.android.embracesdk.fakes.FakeOtelKotlinClock
 import io.embrace.android.embracesdk.fakes.FakeTelemetryService
-import io.embrace.android.embracesdk.fakes.TestConstants.TESTS_DEFAULT_USE_KOTLIN_SDK
+import io.embrace.android.embracesdk.fakes.OtelSdkMode
 import io.embrace.android.embracesdk.fakes.fakeOpenTelemetry
 import io.embrace.android.embracesdk.internal.arch.schema.EmbType
 import io.embrace.android.embracesdk.internal.arch.schema.ErrorCodeAttribute
@@ -28,8 +28,19 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.junit.runners.Parameterized
 
-internal class EmbSpanTest {
+@RunWith(Parameterized::class)
+internal class EmbSpanTest(
+    private val otelSdkMode: OtelSdkMode,
+) {
+
+    companion object {
+        @JvmStatic
+        @Parameterized.Parameters(name = "{0}")
+        fun modes(): List<Array<Any>> = OtelSdkMode.parameters()
+    }
     private lateinit var fakeClock: FakeClock
     private lateinit var openTelemetryClock: Clock
     private lateinit var fakeEmbraceSpan: FakeEmbraceSdkSpan
@@ -43,7 +54,7 @@ internal class EmbSpanTest {
         embSpan = EmbSpan(
             impl = fakeEmbraceSpan,
             clock = openTelemetryClock,
-            openTelemetry = fakeOpenTelemetry(),
+            openTelemetry = fakeOpenTelemetry(otelSdkMode.useKotlinSdk),
         )
     }
 
@@ -131,16 +142,16 @@ internal class EmbSpanTest {
                 assertEquals(event2Time, timestampNanos)
                 assertEquals(
                     mapOf(
-                        "boolean" to "true",
-                        "integer" to "1",
-                        "long" to "2",
-                        "double" to "3.0",
+                        "boolean" to true,
+                        "integer" to 1L,
+                        "long" to 2L,
+                        "double" to 3.0,
                         "string" to "value",
-                        "booleanArray" to "[true, false]",
-                        "integerArray" to "[1, 2]",
-                        "longArray" to "[2, 3]",
-                        "doubleArray" to "[3.0, 4.0]",
-                        "stringArray" to "[value, vee]",
+                        "booleanArray" to listOf(true, false),
+                        "integerArray" to listOf(1L, 2L),
+                        "longArray" to listOf(2L, 3L),
+                        "doubleArray" to listOf(3.0, 4.0),
+                        "stringArray" to listOf("value", "vee"),
                     ),
                     attributes,
                 )
@@ -151,7 +162,7 @@ internal class EmbSpanTest {
     @Test
     fun `event attributes over the limit are truncated to the max event attribute count`() {
         val dataValidator = DataValidator(telemetryService = FakeTelemetryService())
-        val tracer = createSdkOtelInstance(useKotlinSdk = TESTS_DEFAULT_USE_KOTLIN_SDK, clock = openTelemetryClock)
+        val tracer = createSdkOtelInstance(useKotlinSdk = otelSdkMode.useKotlinSdk, clock = openTelemetryClock)
             .getTracer("test-tracer")
         val realSpan = EmbraceSpanFactoryImpl(
             openTelemetryClock = openTelemetryClock,
@@ -165,14 +176,14 @@ internal class EmbSpanTest {
                 internal = false,
                 private = false,
                 tracer = tracer,
-                openTelemetry = fakeOpenTelemetry(),
+                openTelemetry = fakeOpenTelemetry(otelSdkMode.useKotlinSdk),
             ),
         )
         assertTrue(realSpan.start())
         val realEmbSpan = EmbSpan(
             impl = realSpan,
             clock = openTelemetryClock,
-            openTelemetry = fakeOpenTelemetry(),
+            openTelemetry = fakeOpenTelemetry(otelSdkMode.useKotlinSdk),
         )
         val max = dataValidator.otelLimitsConfig.getMaxEventAttributeCount()
 
@@ -252,26 +263,29 @@ internal class EmbSpanTest {
             with(fakeEmbraceSpan.links.single()) {
                 assertEquals(linkedSpanContext.spanId, spanContext.spanId)
                 assertEquals(1, attributes.size)
-                assertEquals("true", attributes["boolean"])
+                assertEquals(true, attributes["boolean"])
             }
         }
     }
 
     @Test
-    fun `any value and byte array attributes are serialized by content`() {
+    fun `attribute values are passed through unchanged`() {
+        val bytes = byteArrayOf(1, 2)
         with(embSpan) {
+            setDoubleAttribute("double", 1.0)
             setAnyValueAttribute("any", AnyValue.LongValue(3L))
             addEvent("event") {
                 setAnyValueAttribute("any", AnyValue.StringValue("wrapped"))
-                setByteArrayAttribute("bytes", byteArrayOf(1, 2))
+                setByteArrayAttribute("bytes", bytes)
             }
             addLink(checkNotNull(FakeEmbraceSdkSpan.started().spanContext)) {
                 setAnyValueAttribute("any", AnyValue.BoolValue(true))
-                setByteArrayAttribute("bytes", byteArrayOf(1, 2))
+                setByteArrayAttribute("bytes", bytes)
             }
         }
-        assertEquals("3", fakeEmbraceSpan.attributes["any"])
-        assertEquals(mapOf("any" to "wrapped", "bytes" to "[1, 2]"), fakeEmbraceSpan.events.single().attributes)
-        assertEquals(mapOf("any" to "true", "bytes" to "[1, 2]"), fakeEmbraceSpan.links.single().attributes)
+        assertEquals(1.0, fakeEmbraceSpan.attributes["double"])
+        assertEquals(AnyValue.LongValue(3L), fakeEmbraceSpan.attributes["any"])
+        assertEquals(mapOf("any" to AnyValue.StringValue("wrapped"), "bytes" to bytes), fakeEmbraceSpan.events.single().attributes)
+        assertEquals(mapOf("any" to AnyValue.BoolValue(true), "bytes" to bytes), fakeEmbraceSpan.links.single().attributes)
     }
 }

@@ -9,7 +9,7 @@ import io.embrace.android.embracesdk.fakes.FakeEmbraceSdkSpan
 import io.embrace.android.embracesdk.fakes.FakeOtelKotlinClock
 import io.embrace.android.embracesdk.fakes.FakeSpanExporter
 import io.embrace.android.embracesdk.fakes.FakeTelemetryService
-import io.embrace.android.embracesdk.fakes.TestConstants.TESTS_DEFAULT_USE_KOTLIN_SDK
+import io.embrace.android.embracesdk.fakes.OtelSdkMode
 import io.embrace.android.embracesdk.fakes.TestPlatformSerializer
 import io.embrace.android.embracesdk.fakes.fakeOpenTelemetry
 import io.embrace.android.embracesdk.fixtures.MAX_LENGTH_ATTRIBUTE_KEY
@@ -38,6 +38,7 @@ import io.embrace.android.embracesdk.internal.arch.schema.PrivateSpan
 import io.embrace.android.embracesdk.internal.clock.millisToNanos
 import io.embrace.android.embracesdk.internal.clock.nanosToMillis
 import io.embrace.android.embracesdk.internal.otel.createSdkOtelInstance
+import io.embrace.android.embracesdk.internal.otel.payload.toEmbracePayload
 import io.embrace.android.embracesdk.internal.otel.sdk.DataValidator
 import io.embrace.android.embracesdk.internal.otel.sdk.findAttributeValue
 import io.embrace.android.embracesdk.internal.otel.sdk.id.OtelIds
@@ -62,6 +63,8 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.junit.runners.Parameterized
 import java.util.Queue
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
@@ -69,7 +72,10 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
-internal class EmbraceSpanImplTest {
+@RunWith(Parameterized::class)
+internal class EmbraceSpanImplTest(
+    private val otelSdkMode: OtelSdkMode,
+) {
     private lateinit var fakeClock: FakeClock
     private lateinit var embraceSpan: EmbraceSdkSpan
     private lateinit var spanRepository: SpanRepository
@@ -92,7 +98,7 @@ internal class EmbraceSpanImplTest {
         spanExporter = FakeSpanExporter()
         tracer = createSdkOtelInstance(
             clock = otelClock,
-            useKotlinSdk = TESTS_DEFAULT_USE_KOTLIN_SDK,
+            useKotlinSdk = otelSdkMode.useKotlinSdk,
             tracerProvider = {
                 export {
                     EmbraceSpanProcessor(
@@ -122,7 +128,7 @@ internal class EmbraceSpanImplTest {
                 internal = false,
                 private = false,
                 tracer = tracer,
-                openTelemetry = fakeOpenTelemetry(),
+                openTelemetry = fakeOpenTelemetry(otelSdkMode.useKotlinSdk),
             ),
         )
         fakeClock.tick(100)
@@ -674,7 +680,7 @@ internal class EmbraceSpanImplTest {
 
     @Test
     fun `validate context objects are propagated from the parent to the child span`() {
-        val newParentContext = fakeOpenTelemetry().context.root().set(fakeContextKey, "fake-value")
+        val newParentContext = fakeOpenTelemetry(otelSdkMode.useKotlinSdk).context.root().set(fakeContextKey, "fake-value")
         val wrapper = createWrapperForInternalSpan(parentContext = newParentContext)
         embraceSpan = embraceSpanFactory.create(wrapper)
 
@@ -705,6 +711,33 @@ internal class EmbraceSpanImplTest {
         val exported = exportedSpanAttributes.single()
         assertEquals(REDACTED_LABEL, exported["password"])
         assertEquals("ok", exported["status"])
+    }
+
+    @Test
+    fun `typed attribute values are snapshotted and exported as their string form`() {
+        embraceSpan = embraceSpanFactory.create(createWrapperForInternalSpan())
+        embraceSpan.start()
+        embraceSpan.addSystemAttribute("system-long", 5L)
+        embraceSpan.addCustomAttribute("custom-list", listOf(true, false))
+        embraceSpan.addCustomAttribute("password", 123456L)
+        embraceSpan.addCustomEvent("event", null, mapOf("event-double" to 1.0, "password" to 654321L))
+        embraceSpan.addCustomLink(checkNotNull(FakeEmbraceSdkSpan.started().spanContext), mapOf("link-bool" to true))
+        assertEquals(5L, embraceSpan.attributes()["system-long"])
+        assertEquals(REDACTED_LABEL, embraceSpan.attributes()["password"])
+
+        val expectedAttributes =
+            mapOf("system-long" to "5", "custom-list" to "[true, false]", "password" to REDACTED_LABEL)
+        val expectedEventAttributes = mapOf("event-double" to "1.0", "password" to REDACTED_LABEL)
+        val snapshot = checkNotNull(embraceSpan.snapshot())
+        assertEquals(expectedAttributes, snapshot.attributes?.toEmbracePayload()?.filterKeys(expectedAttributes::containsKey))
+        assertEquals(expectedEventAttributes, snapshot.events?.single()?.attributes?.toEmbracePayload())
+        assertEquals(mapOf("link-bool" to "true"), snapshot.links?.single()?.attributes?.toEmbracePayload())
+
+        assertTrue(embraceSpan.stop())
+        val exported = spanExporter.exportedSpans.single()
+        assertEquals(expectedAttributes, exported.attributes.filterKeys(expectedAttributes::containsKey))
+        assertEquals(expectedEventAttributes, exported.events.single().attributes)
+        assertEquals(mapOf("link-bool" to "true"), exported.links.single().attributes)
     }
 
     @Test
@@ -977,7 +1010,7 @@ internal class EmbraceSpanImplTest {
                         assertTrue(checkNotNull(it.data).matches(OWNED_VALUE_PATTERN))
                     }
                     embraceSpan.getSystemAttribute(keptKey(0))?.let {
-                        assertTrue(it.matches(OWNED_VALUE_PATTERN))
+                        assertTrue(it.toString().matches(OWNED_VALUE_PATTERN))
                     }
                 }
             }
@@ -1066,7 +1099,7 @@ internal class EmbraceSpanImplTest {
         tracer = tracer,
         parentCtx = parentContext,
         startTimeMs = startTimeMs,
-        openTelemetry = fakeOpenTelemetry(),
+        openTelemetry = fakeOpenTelemetry(otelSdkMode.useKotlinSdk),
     )
 
     private fun EmbraceSdkSpan.assertSnapshot(
@@ -1141,6 +1174,10 @@ internal class EmbraceSpanImplTest {
     }
 
     companion object {
+        @JvmStatic
+        @Parameterized.Parameters(name = "{0}")
+        fun modes(): List<Array<Any>> = OtelSdkMode.parameters()
+
         private const val EXPECTED_SPAN_NAME = "test-span"
         private const val EXPECTED_EVENT_NAME = "fun event 🔥"
         private const val EXPECTED_ATTRIBUTE_NAME = "attribute-key"

@@ -8,15 +8,15 @@ import io.embrace.android.embracesdk.fakes.FakeInstrumentationModule
 import io.embrace.android.embracesdk.fakes.FakeInternalLogger
 import io.embrace.android.embracesdk.fakes.FakeReadWriteLogRecord
 import io.embrace.android.embracesdk.fakes.TestPlatformSerializer
-import io.embrace.android.embracesdk.fakes.createSdkModeBehavior
 import io.embrace.android.embracesdk.fakes.injection.FakeCoreModule
 import io.embrace.android.embracesdk.fakes.injection.FakeInitModule
 import io.embrace.android.embracesdk.internal.arch.InstrumentationRegistry
-import io.embrace.android.embracesdk.internal.arch.datasource.DataSourceState
 import io.embrace.android.embracesdk.internal.clock.Clock
 import io.embrace.android.embracesdk.internal.config.PersistedConfig
 import io.embrace.android.embracesdk.internal.config.remote.OtelKotlinSdkConfig
 import io.embrace.android.embracesdk.internal.config.remote.RemoteConfig
+import io.embrace.android.embracesdk.internal.config.resolved.EmbraceConfig
+import io.embrace.android.embracesdk.internal.config.resolved.SdkModeConfig
 import io.embrace.android.embracesdk.internal.injection.EssentialServiceModuleImpl
 import io.embrace.android.embracesdk.internal.injection.InitModuleImpl
 import io.embrace.android.embracesdk.internal.injection.ModuleInitBootstrapper
@@ -172,7 +172,7 @@ internal class ModuleInitBootstrapperTest {
             initModule = FakeInitModule(clock = clock, logger = logger),
             configServiceSupplier = { _, _, _, _, _ ->
                 FakeConfigService(
-                    sdkModeBehavior = createSdkModeBehavior(remoteCfg = RemoteConfig(threshold = 0)),
+                    config = EmbraceConfig(sdkMode = { SdkModeConfig(sdkDisabled = { true }) }),
                 )
             },
         )
@@ -199,7 +199,7 @@ internal class ModuleInitBootstrapperTest {
         moduleInitBootstrapper.init(context)
         val registry = moduleInitBootstrapper.instrumentationModule.instrumentationRegistry
         val dataSource = CrashHandlerDataSource()
-        registry.add(DataSourceState(factory = { dataSource }))
+        registry.add { dataSource }
 
         moduleInitBootstrapper.postLoadInstrumentation()
 

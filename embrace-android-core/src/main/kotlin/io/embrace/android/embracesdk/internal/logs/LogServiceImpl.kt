@@ -7,6 +7,8 @@ import io.embrace.android.embracesdk.internal.arch.schema.SchemaType
 import io.embrace.android.embracesdk.internal.arch.schema.TelemetryAttributes
 import io.embrace.android.embracesdk.internal.config.ConfigService
 import io.embrace.android.embracesdk.internal.config.behavior.REDACTED_LABEL
+import io.embrace.android.embracesdk.internal.config.behavior.SensitiveKeysBehavior
+import io.embrace.android.embracesdk.internal.otel.payload.toPayloadString
 import io.embrace.android.embracesdk.internal.payload.AppFramework
 import io.embrace.android.embracesdk.internal.telemetry.AppliedLimitType
 import io.embrace.android.embracesdk.internal.telemetry.TelemetryService
@@ -24,8 +26,9 @@ class LogServiceImpl(
     private val telemetryService: TelemetryService,
 ) : LogService {
 
-    private val behavior = configService.logMessageBehavior
+    private val cfg = configService.config.log
     private val bypassLimitsValidation = configService.isOnlyUsingOtelExporters()
+    private val sensitiveKeysBehavior = SensitiveKeysBehavior(configService.config.sensitiveKeys)
 
     override fun log(
         message: String,
@@ -54,7 +57,7 @@ class LogServiceImpl(
         val maxLength = if (configService.appFramework == AppFramework.UNITY) {
             LOG_MESSAGE_UNITY_MAXIMUM_ALLOWED_LENGTH
         } else {
-            behavior.getLogMessageMaximumAllowedLength()
+            cfg.maxMessageLength
         }
 
         if (message.length > maxLength) {
@@ -71,14 +74,14 @@ class LogServiceImpl(
         }
     }
 
-    private fun redactSensitiveAttributes(attributes: Map<String, Any>, telemetryType: String): Map<String, String> {
+    private fun redactSensitiveAttributes(attributes: Map<String, Any>, telemetryType: String): Map<String, Any> {
         return sanitizeAttributes(
             attributes = attributes,
             telemetryType = telemetryType,
             bypassPropertyLimit = bypassLimitsValidation,
         ).mapValues { (key, value) ->
             when {
-                configService.sensitiveKeysBehavior.isSensitiveKey(key) -> REDACTED_LABEL
+                sensitiveKeysBehavior.isSensitiveKey(key) -> REDACTED_LABEL
                 else -> value
             }
         }
@@ -88,10 +91,10 @@ class LogServiceImpl(
         attributes: Map<String, Any>,
         telemetryType: String,
         bypassPropertyLimit: Boolean = false,
-    ): Map<String, String> {
+    ): Map<String, Any> {
         return runCatching {
             if (bypassPropertyLimit) {
-                return@runCatching attributes.mapValues { checkIfSerializable(it.value).toString() }
+                return@runCatching attributes.mapValues { checkIfSerializable(it.value) }
             }
 
             if (attributes.size > MAX_PROPERTY_COUNT) {
@@ -103,11 +106,11 @@ class LogServiceImpl(
                 val truncatedKey =
                     truncateAndTrack(key, MAX_PROPERTY_KEY_LENGTH, "log_attribute_key")
 
-                val stringValue = checkIfSerializable(value).toString()
+                val serializableValue = checkIfSerializable(value)
                 val truncatedValue = if (key == ExceptionAttributes.EXCEPTION_STACKTRACE) {
-                    stringValue
+                    serializableValue
                 } else {
-                    truncateAndTrack(stringValue, MAX_PROPERTY_VALUE_LENGTH, "log_attribute_value")
+                    truncateValueAndTrack(serializableValue)
                 }
 
                 truncatedKey to truncatedValue
@@ -120,6 +123,19 @@ class LogServiceImpl(
             return "not serializable"
         }
         return value
+    }
+
+    private fun truncateValueAndTrack(value: Any): Any {
+        if (value is String) {
+            return truncateAndTrack(value, MAX_PROPERTY_VALUE_LENGTH, "log_attribute_value")
+        }
+        val stringValue = value.toPayloadString().orEmpty()
+        val truncated = truncateAndTrack(stringValue, MAX_PROPERTY_VALUE_LENGTH, "log_attribute_value")
+        return if (truncated == stringValue) {
+            value
+        } else {
+            truncated
+        }
     }
 
     private fun truncateAndTrack(

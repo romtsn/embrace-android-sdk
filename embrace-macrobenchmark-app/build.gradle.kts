@@ -70,6 +70,12 @@ android {
             signingConfig = signingConfigs.getByName("debug")
             matchingFallbacks += listOf("release")
         }
+        create("baselineProfile") {
+            isMinifyEnabled = false
+            isDebuggable = false
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += listOf("release")
+        }
     }
 
     compileOptions {
@@ -87,6 +93,10 @@ kotlin {
 dependencies {
     implementation(project(":embrace-android-sdk"))
     implementation(project(":embrace-benchmark-common"))
+    implementation(project(":embrace-android-otel-java"))
+    implementation(libs.opentelemetry.kotlin.api)
+    implementation(platform(libs.opentelemetry.bom))
+    implementation(libs.opentelemetry.api)
 
     // macrobenchmark needs 1.4.0+ to install a baseline profile on API 34+, overriding the
     // older version the SDK pins for its own build

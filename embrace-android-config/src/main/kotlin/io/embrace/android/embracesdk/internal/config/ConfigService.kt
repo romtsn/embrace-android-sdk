@@ -1,22 +1,11 @@
 package io.embrace.android.embracesdk.internal.config
 
-import io.embrace.android.embracesdk.internal.config.behavior.AppExitInfoBehavior
-import io.embrace.android.embracesdk.internal.config.behavior.AutoDataCaptureBehavior
-import io.embrace.android.embracesdk.internal.config.behavior.BackgroundActivityBehavior
-import io.embrace.android.embracesdk.internal.config.behavior.BreadcrumbBehavior
-import io.embrace.android.embracesdk.internal.config.behavior.DataCaptureEventBehavior
-import io.embrace.android.embracesdk.internal.config.behavior.ExperimentBehavior
-import io.embrace.android.embracesdk.internal.config.behavior.LogMessageBehavior
 import io.embrace.android.embracesdk.internal.config.behavior.NetworkBehavior
 import io.embrace.android.embracesdk.internal.config.behavior.NetworkSpanForwardingBehavior
 import io.embrace.android.embracesdk.internal.config.behavior.OtelBehavior
-import io.embrace.android.embracesdk.internal.config.behavior.PersistenceBehavior
-import io.embrace.android.embracesdk.internal.config.behavior.SdkModeBehavior
-import io.embrace.android.embracesdk.internal.config.behavior.SensitiveKeysBehavior
-import io.embrace.android.embracesdk.internal.config.behavior.ThreadBlockageBehavior
 import io.embrace.android.embracesdk.internal.config.behavior.TraceparentInjectionBehavior
 import io.embrace.android.embracesdk.internal.config.behavior.UserSessionBehavior
-import io.embrace.android.embracesdk.internal.config.behavior.VitalsBehavior
+import io.embrace.android.embracesdk.internal.config.resolved.EmbraceConfig
 import io.embrace.android.embracesdk.internal.payload.AppFramework
 
 /**
@@ -27,34 +16,9 @@ import io.embrace.android.embracesdk.internal.payload.AppFramework
 interface ConfigService {
 
     /**
-     * How background activity functionality should behave.
+     * The resolved config.
      */
-    val backgroundActivityBehavior: BackgroundActivityBehavior
-
-    /**
-     * How automatic data capture functionality should behave.
-     */
-    val autoDataCaptureBehavior: AutoDataCaptureBehavior
-
-    /**
-     * How automatic breadcrumb functionality should behave.
-     */
-    val breadcrumbBehavior: BreadcrumbBehavior
-
-    /**
-     * How log message functionality should behave.
-     */
-    val logMessageBehavior: LogMessageBehavior
-
-    /**
-     * How thread blockage functionality should behave.
-     */
-    val threadBlockageBehavior: ThreadBlockageBehavior
-
-    /**
-     * How the vitals (smoothness / screen-load) feature's thresholds should behave.
-     */
-    val vitalsBehavior: VitalsBehavior
+    val config: EmbraceConfig
 
     /**
      * How sessions should behave.
@@ -62,29 +26,9 @@ interface ConfigService {
     val sessionBehavior: UserSessionBehavior
 
     /**
-     * How the experiments tracking API should behave.
-     */
-    val experimentBehavior: ExperimentBehavior
-
-    /**
      * How network call capture should behave.
      */
     val networkBehavior: NetworkBehavior
-
-    /**
-     * How the SDK should handle events where data can be captured. This could be a moment, etc...
-     */
-    val dataCaptureEventBehavior: DataCaptureEventBehavior
-
-    /**
-     * Provides whether the SDK should enable certain 'behavior' modes, such as 'integration mode'
-     */
-    val sdkModeBehavior: SdkModeBehavior
-
-    /**
-     * Provides behavior for the app exit info feature
-     */
-    val appExitInfoBehavior: AppExitInfoBehavior
 
     /**
      * How the traceparent injection feature should behave
@@ -97,19 +41,14 @@ interface ConfigService {
     val networkSpanForwardingBehavior: NetworkSpanForwardingBehavior
 
     /**
-     * Provides behavior for keys that might be sensitive and should be redacted when they are sent to the server
-     */
-    val sensitiveKeysBehavior: SensitiveKeysBehavior
-
-    /**
      * Provides behavior for OpenTelemetry configuration
      */
     val otelBehavior: OtelBehavior
 
     /**
-     * How the persistence layer should behave when writing telemetry to disk.
+     * Codes of pct flags that are mid-rollout and enabled for this device.
      */
-    val persistenceBehavior: PersistenceBehavior
+    val enabledPctRollouts: List<String>
 
     /**
      * The app framework that is currently in use.

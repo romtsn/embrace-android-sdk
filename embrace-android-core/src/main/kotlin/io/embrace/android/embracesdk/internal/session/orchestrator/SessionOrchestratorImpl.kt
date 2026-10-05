@@ -379,7 +379,7 @@ internal class SessionOrchestratorImpl(
                         endSessionPartCallback = {
                             // End the current session or background activity, if either exist.
                             EmbTrace.trace("end-current-session") {
-                                processEndMessage(oldSessionAction?.invoke(this), transitionType)
+                                processEndMessage(oldSessionAction?.invoke(this))
                             }
 
                             // persist the stopped session part span
@@ -522,7 +522,7 @@ internal class SessionOrchestratorImpl(
             val currentAppState = state
             val timestamp = clock.now()
             val captureNextPart = currentAppState != ProcessState.BACKGROUND ||
-                configService.backgroundActivityBehavior.isBackgroundActivityCaptureEnabled()
+                configService.config.backgroundActivity.captureEnabled
             transitionState(
                 transitionType = TransitionType.MAX_DURATION,
                 timestamp = timestamp,
@@ -560,7 +560,7 @@ internal class SessionOrchestratorImpl(
                     payloadFactory.endPayloadWithState(ProcessState.BACKGROUND, timestamp, initial)
                 },
                 newSessionAction = {
-                    if (configService.backgroundActivityBehavior.isBackgroundActivityCaptureEnabled()) {
+                    if (configService.config.backgroundActivity.captureEnabled) {
                         payloadFactory.startPayloadWithState(
                             state = ProcessState.BACKGROUND,
                             timestamp = timestamp,
@@ -585,14 +585,14 @@ internal class SessionOrchestratorImpl(
         }
     }
 
-    private fun processEndMessage(envelope: Envelope<SessionPartPayload>?, transitionType: TransitionType) {
+    private fun processEndMessage(envelope: Envelope<SessionPartPayload>?) {
         envelope?.let {
-            payloadStore?.storeSessionPartPayload(envelope, transitionType)
+            payloadStore?.storeSessionPartPayload(envelope)
         }
     }
 
     private fun multiFilePersistenceEnabled(): Boolean =
-        configService.persistenceBehavior.isMultiFilePersistenceEnabled()
+        configService.config.persistence.multiFileEnabled
 
     private fun updatePeriodicCacheAttrs() {
         destination.addSessionPartAttribute(EmbSessionAttributes.EMB_TERMINATED, true.toString())
@@ -641,7 +641,7 @@ internal class SessionOrchestratorImpl(
             // User session being ended explicitly - end current one and start a new one based on the expected endAppState.
             transitionType.endsUserSession -> {
                 clearBackgroundStartupWindowTimer()
-                val backgroundCaptureDisabled = !configService.backgroundActivityBehavior.isBackgroundActivityCaptureEnabled()
+                val backgroundCaptureDisabled = !configService.config.backgroundActivity.captureEnabled
                 if (endProcessState == ProcessState.BACKGROUND && backgroundCaptureDisabled) {
                     terminateActiveUserSession()
                 } else {

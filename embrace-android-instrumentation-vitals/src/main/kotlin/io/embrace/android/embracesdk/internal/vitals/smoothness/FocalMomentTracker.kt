@@ -27,7 +27,7 @@ internal class FocalMomentTracker(
     private val screenLoadTracker: ScreenLoadTracker,
     private val idleThresholdMs: Long = DEFAULT_IDLE_THRESHOLD_MS,
     private val heldIdleThresholdMs: Long = DEFAULT_HELD_IDLE_THRESHOLD_MS,
-    // Only non-null for a sampled fraction of devices; see VitalsBehavior.isSmoothnessFrameTraceEnabled.
+    // Only non-null for a sampled fraction of devices; see VitalsConfig.smoothnessFrameTraceEnabled.
     private val frameTraceRecorder: FrameTraceRecorder? = null,
 ) : FocalInteractionCallbacks {
 
@@ -140,7 +140,8 @@ internal class FocalMomentTracker(
         if (held) {
             flushHeld()
         } else if (capturing) {
-            completeFocalMoment(FocalOutcome.INTERRUPTED, endNanos = nowNanos())
+            // end at the last activity, not now, so the idle gap before the interruption isn't counted
+            completeFocalMoment(FocalOutcome.INTERRUPTED, endNanos = settle.lastActivityMs.millisToNanos())
         }
     }
 
@@ -220,8 +221,6 @@ internal class FocalMomentTracker(
     }
 
     private fun nowMs(): Long = SystemClock.uptimeMillis()
-
-    private fun nowNanos(): Long = nowMs().millisToNanos()
 
     companion object {
         const val DEFAULT_IDLE_THRESHOLD_MS = 100L

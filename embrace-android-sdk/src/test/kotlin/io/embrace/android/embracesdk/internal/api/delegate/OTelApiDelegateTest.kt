@@ -1,7 +1,6 @@
 package io.embrace.android.embracesdk.internal.api.delegate
 
 import androidx.test.core.app.ApplicationProvider
-import androidx.test.ext.junit.runners.AndroidJUnit4
 import io.embrace.android.embracesdk.fakes.FakeAttributesMutator
 import io.embrace.android.embracesdk.fakes.FakeInternalLogger
 import io.embrace.android.embracesdk.fakes.FakeLogRecordExporter
@@ -10,22 +9,31 @@ import io.embrace.android.embracesdk.fakes.FakeOpenTelemetryModule
 import io.embrace.android.embracesdk.fakes.FakeSpanExporter
 import io.embrace.android.embracesdk.fakes.FakeSpanProcessor
 import io.embrace.android.embracesdk.fakes.FakeTelemetryService
+import io.embrace.android.embracesdk.fakes.OtelSdkMode
 import io.embrace.android.embracesdk.fakes.injection.FakeInitModule
 import io.embrace.android.embracesdk.internal.injection.ModuleInitBootstrapper
 import io.embrace.android.embracesdk.internal.otel.config.OtelSdkConfig
-import io.opentelemetry.kotlin.NoopOpenTelemetry
 import io.opentelemetry.kotlin.semconv.ServiceAttributes
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.ParameterizedRobolectricTestRunner
 
-@RunWith(AndroidJUnit4::class)
-internal class OTelApiDelegateTest {
+@RunWith(ParameterizedRobolectricTestRunner::class)
+internal class OTelApiDelegateTest(
+    private val otelSdkMode: OtelSdkMode,
+) {
+
+    companion object {
+        @JvmStatic
+        @ParameterizedRobolectricTestRunner.Parameters(name = "{0}")
+        fun modes(): List<Array<Any>> = OtelSdkMode.parameters()
+    }
 
     private lateinit var bootstrapper: ModuleInitBootstrapper
     private lateinit var delegate: OTelApiDelegate
@@ -36,7 +44,7 @@ internal class OTelApiDelegateTest {
     fun setUp() {
         bootstrapper = ModuleInitBootstrapper(
             FakeInitModule(),
-            FakeOpenTelemetryModule(),
+            FakeOpenTelemetryModule(useKotlinSdk = otelSdkMode.useKotlinSdk),
         )
         bootstrapper.init(ApplicationProvider.getApplicationContext())
         cfg = bootstrapper.openTelemetryModule.otelSdkConfig
@@ -89,14 +97,15 @@ internal class OTelApiDelegateTest {
     }
 
     @Test
-    fun `get opentelemetry kotlin before start`() {
+    fun `get opentelemetry kotlin binds late`() {
         sdkCallChecker.started.set(false)
-        assertEquals(NoopOpenTelemetry, delegate.getOpenTelemetryKotlin())
-    }
+        val otel = delegate.getOpenTelemetryKotlin()
+        val tracer = otel.tracerProvider.getTracer("test")
+        assertFalse(tracer.startSpan("before").isRecording())
 
-    @Test
-    fun `get opentelemetry kotlin after start`() {
-        assertNotEquals(NoopOpenTelemetry, delegate.getOpenTelemetryKotlin())
+        sdkCallChecker.started.set(true)
+        assertSame(otel, delegate.getOpenTelemetryKotlin())
+        assertTrue(tracer.startSpan("after").isRecording())
     }
 
     @Test

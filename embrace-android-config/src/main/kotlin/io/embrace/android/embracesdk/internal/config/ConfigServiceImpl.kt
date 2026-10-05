@@ -1,24 +1,15 @@
 package io.embrace.android.embracesdk.internal.config
 
-import io.embrace.android.embracesdk.internal.config.behavior.AppExitInfoBehaviorImpl
-import io.embrace.android.embracesdk.internal.config.behavior.AutoDataCaptureBehaviorImpl
-import io.embrace.android.embracesdk.internal.config.behavior.BackgroundActivityBehaviorImpl
 import io.embrace.android.embracesdk.internal.config.behavior.BehaviorThresholdCheck
-import io.embrace.android.embracesdk.internal.config.behavior.BreadcrumbBehaviorImpl
-import io.embrace.android.embracesdk.internal.config.behavior.DataCaptureEventBehaviorImpl
-import io.embrace.android.embracesdk.internal.config.behavior.ExperimentBehaviorImpl
-import io.embrace.android.embracesdk.internal.config.behavior.LogMessageBehaviorImpl
 import io.embrace.android.embracesdk.internal.config.behavior.NetworkBehaviorImpl
 import io.embrace.android.embracesdk.internal.config.behavior.NetworkSpanForwardingBehaviorImpl
-import io.embrace.android.embracesdk.internal.config.behavior.PersistenceBehaviorImpl
-import io.embrace.android.embracesdk.internal.config.behavior.SdkModeBehaviorImpl
-import io.embrace.android.embracesdk.internal.config.behavior.SensitiveKeysBehaviorImpl
-import io.embrace.android.embracesdk.internal.config.behavior.ThreadBlockageBehaviorImpl
 import io.embrace.android.embracesdk.internal.config.behavior.TraceparentInjectionBehaviorImpl
 import io.embrace.android.embracesdk.internal.config.behavior.UserSessionBehaviorImpl
-import io.embrace.android.embracesdk.internal.config.behavior.VitalsBehaviorImpl
 import io.embrace.android.embracesdk.internal.config.instrumented.schema.InstrumentedConfig
 import io.embrace.android.embracesdk.internal.config.remote.RemoteConfig
+import io.embrace.android.embracesdk.internal.config.resolved.EmbraceConfig
+import io.embrace.android.embracesdk.internal.config.resolved.resolveConfig
+import io.embrace.android.embracesdk.internal.config.rollout.PCT_ROLLOUT_FLAGS
 import io.embrace.android.embracesdk.internal.config.source.CombinedRemoteConfigSource
 import io.embrace.android.embracesdk.internal.config.source.ConfigEndpoint
 import io.embrace.android.embracesdk.internal.config.source.OkHttpRemoteConfigSource
@@ -99,29 +90,24 @@ class ConfigServiceImpl(
     }
 
     private val thresholdCheck: BehaviorThresholdCheck = persistedConfig.thresholdCheck
-    override val backgroundActivityBehavior =
-        BackgroundActivityBehaviorImpl(thresholdCheck, instrumentedConfig, remoteConfig)
-    override val autoDataCaptureBehavior =
-        AutoDataCaptureBehaviorImpl(thresholdCheck, instrumentedConfig, remoteConfig)
-    override val breadcrumbBehavior = BreadcrumbBehaviorImpl(instrumentedConfig, remoteConfig)
-    override val sensitiveKeysBehavior = SensitiveKeysBehaviorImpl(instrumentedConfig)
-    override val logMessageBehavior = LogMessageBehaviorImpl(remoteConfig)
-    override val threadBlockageBehavior = ThreadBlockageBehaviorImpl(thresholdCheck, remoteConfig)
-    override val vitalsBehavior = VitalsBehaviorImpl(thresholdCheck, remoteConfig)
+
+    override val config: EmbraceConfig =
+        resolveConfig(instrumentedConfig, remoteConfig, lazy(thresholdCheck::getNormalizedDeviceId))
     override val sessionBehavior = UserSessionBehaviorImpl(remoteConfig)
-    override val experimentBehavior = ExperimentBehaviorImpl(remoteConfig)
-    override val networkBehavior = NetworkBehaviorImpl(instrumentedConfig, remoteConfig)
-    override val dataCaptureEventBehavior = DataCaptureEventBehaviorImpl(remoteConfig)
-    override val sdkModeBehavior = SdkModeBehaviorImpl(thresholdCheck, remoteConfig)
-    override val appExitInfoBehavior =
-        AppExitInfoBehaviorImpl(thresholdCheck, instrumentedConfig, remoteConfig)
+    override val networkBehavior =
+        NetworkBehaviorImpl(instrumentedConfig, remoteConfig, persistedConfig.configDeliveredAt)
     override val traceparentInjectionBehavior =
         TraceparentInjectionBehaviorImpl(thresholdCheck, instrumentedConfig, remoteConfig)
     override val networkSpanForwardingBehavior =
         NetworkSpanForwardingBehaviorImpl(traceparentInjectionBehavior, thresholdCheck, instrumentedConfig, remoteConfig)
     override val otelBehavior = persistedConfig.otelBehavior
-    override val persistenceBehavior =
-        PersistenceBehaviorImpl(thresholdCheck, instrumentedConfig, remoteConfig)
+
+    override val enabledPctRollouts: List<String> by lazy {
+        val cfg = remoteConfig ?: return@lazy emptyList()
+        PCT_ROLLOUT_FLAGS.mapNotNull { (code, selector) ->
+            code.takeIf { selector(cfg)?.let { it > 0 && it < 100 && thresholdCheck.isBehaviorEnabled(it) } == true }
+        }
+    }
 
     override val appId: String? = run {
         val id = instrumentedConfig.project.getAppId()

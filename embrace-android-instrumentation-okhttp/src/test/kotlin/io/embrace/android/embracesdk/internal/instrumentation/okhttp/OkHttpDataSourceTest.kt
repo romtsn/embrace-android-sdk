@@ -187,6 +187,7 @@ internal class OkHttpDataSourceTest {
                     statusCodes = setOf(200, 500),
                 ),
             ),
+            configDeliveredAt = sdkClock.now(),
         )
     }
 
@@ -706,10 +707,10 @@ internal class OkHttpDataSourceTest {
 
     private fun validateDefaultNonBodyNetworkCaptureData(log: FakeLogData) {
         val attrs = log.schemaType.attributes()
-        val reqHeader = checkNotNull(attrs[HttpAttributes.HTTP_REQUEST_HEADER])
+        val reqHeader = checkNotNull(attrs[HttpAttributes.HTTP_REQUEST_HEADER]).toString()
         assertTrue(reqHeader.contains("requestheader=requestHeaderVal"))
 
-        val responseHeader = checkNotNull(attrs[HttpAttributes.HTTP_RESPONSE_HEADER])
+        val responseHeader = checkNotNull(attrs[HttpAttributes.HTTP_RESPONSE_HEADER]).toString()
         assertTrue(responseHeader.contains("responseheader=responseHeaderVal"))
         assertEquals(DEFAULT_QUERY_STRING, attrs[EmbNetworkCapturedRequestAttributes.REQUEST_QUERY])
 
