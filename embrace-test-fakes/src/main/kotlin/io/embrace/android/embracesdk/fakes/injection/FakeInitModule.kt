@@ -16,7 +16,7 @@ import io.embrace.android.embracesdk.internal.injection.InitModuleImpl
 import io.embrace.android.embracesdk.internal.injection.OpenTelemetryModule
 import io.embrace.android.embracesdk.internal.injection.OpenTelemetryModuleImpl
 import io.embrace.android.embracesdk.internal.logging.InternalLogger
-import io.embrace.android.embracesdk.internal.telemetry.TelemetryService
+import io.embrace.android.embracesdk.internal.telemetry.InternalTelemetryService
 import io.embrace.android.embracesdk.internal.utils.UuidSource
 
 class FakeInitModule(
@@ -27,7 +27,7 @@ class FakeInitModule(
         deviceManufacturer = "Fake Manufacturer",
         deviceModel = "Phake Phone Phive"
     ),
-    private val fakeTelemetryService: TelemetryService? = null,
+    private val fakeTelemetryService: InternalTelemetryService? = null,
     override val uuidSource: UuidSource = TestUuidSource(),
     private val initModule: InitModule = InitModuleImpl(
         logger = logger,
@@ -36,26 +36,24 @@ class FakeInitModule(
         uuidSource = uuidSource,
     ),
     override var instrumentedConfig: InstrumentedConfig = FakeInstrumentedConfig(),
-    private val otelSdkMode: OtelSdkMode? = null,
+    private val otelSdkMode: OtelSdkMode,
 ) : InitModule by initModule {
 
-    override val telemetryService: TelemetryService
+    override val telemetryService: InternalTelemetryService
         get() = fakeTelemetryService ?: initModule.telemetryService
 
     /**
-     * Selects the OTel SDK implementation before SDK init, when [otelSdkMode] is supplied.
+     * Selects the OTel SDK implementation from [otelSdkMode] before SDK init.
      */
     val openTelemetryModule: OpenTelemetryModule by lazy {
         OpenTelemetryModuleImpl(initModule = this).apply {
-            otelSdkMode?.let { mode ->
-                setOtelBehavior(
-                    createOtelBehavior(
-                        remoteCfg = RemoteConfig(
-                            otelKotlinSdkConfig = OtelKotlinSdkConfig(pctEnabled = if (mode.useKotlinSdk) 100f else 0f),
-                        ),
+            setOtelBehavior(
+                createOtelBehavior(
+                    remoteCfg = RemoteConfig(
+                        otelKotlinSdkConfig = OtelKotlinSdkConfig(pctEnabled = if (otelSdkMode.useKotlinSdk) 100f else 0f),
                     ),
-                )
-            }
+                ),
+            )
         }
     }
 

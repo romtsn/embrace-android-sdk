@@ -3,8 +3,8 @@ package io.embrace.android.embracesdk.internal.api.delegate
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import io.embrace.android.embracesdk.fakes.FakeInternalLogger
-import io.embrace.android.embracesdk.fakes.FakeTelemetryService
 import io.embrace.android.embracesdk.fakes.FakeUserService
+import io.embrace.android.embracesdk.fakes.OtelSdkMode
 import io.embrace.android.embracesdk.fakes.injection.FakeEssentialServiceModule
 import io.embrace.android.embracesdk.fakes.injection.FakeInitModule
 import io.embrace.android.embracesdk.internal.injection.ModuleInitBootstrapper
@@ -26,7 +26,7 @@ internal class UserApiDelegateTest {
     @Before
     fun setUp() {
         val moduleInitBootstrapper = ModuleInitBootstrapper(
-            FakeInitModule(),
+            FakeInitModule(otelSdkMode = OtelSdkMode.COMPAT),
             essentialServiceModuleSupplier = { _, _, _, _, _, _, _, _, _ ->
                 FakeEssentialServiceModule().apply {
                     fakeUserService = userService as FakeUserService
@@ -34,7 +34,7 @@ internal class UserApiDelegateTest {
             },
         )
         moduleInitBootstrapper.init(ApplicationProvider.getApplicationContext())
-        val sdkCallChecker = SdkCallChecker(FakeInternalLogger(), FakeTelemetryService())
+        val sdkCallChecker = SdkCallChecker(FakeInternalLogger())
         sdkCallChecker.started.set(true)
         delegate = UserApiDelegate(moduleInitBootstrapper, sdkCallChecker)
     }

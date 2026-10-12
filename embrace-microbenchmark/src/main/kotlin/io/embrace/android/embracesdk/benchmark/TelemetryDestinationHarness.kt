@@ -5,6 +5,7 @@ import io.embrace.android.embracesdk.internal.arch.datasource.TelemetryDestinati
 import io.embrace.android.embracesdk.internal.arch.destination.TelemetryDestinationImpl
 import io.embrace.android.embracesdk.internal.arch.startup.StartupClassifier
 import io.embrace.android.embracesdk.internal.arch.startup.StartupClassifierImpl
+import io.embrace.android.embracesdk.internal.clock.Clock
 import io.embrace.android.embracesdk.internal.clock.NormalizedIntervalClock
 import io.embrace.android.embracesdk.internal.config.behavior.BehaviorThresholdCheck
 import io.embrace.android.embracesdk.internal.config.behavior.OtelBehaviorImpl
@@ -14,6 +15,7 @@ import io.embrace.android.embracesdk.internal.config.remote.OtelKotlinSdkConfig
 import io.embrace.android.embracesdk.internal.config.remote.RemoteConfig
 import io.embrace.android.embracesdk.internal.injection.InitModule
 import io.embrace.android.embracesdk.internal.injection.OpenTelemetryModuleImpl
+import io.embrace.android.embracesdk.internal.logging.BufferedInternalErrorHandler
 import io.embrace.android.embracesdk.internal.logging.InternalLogger
 import io.embrace.android.embracesdk.internal.logging.InternalLoggerImpl
 import io.embrace.android.embracesdk.internal.otel.impl.EmbClock
@@ -26,17 +28,21 @@ import io.embrace.android.embracesdk.internal.otel.spans.SpanServiceImpl
 import io.embrace.android.embracesdk.internal.serialization.EmbraceSerializer
 import io.embrace.android.embracesdk.internal.serialization.PlatformSerializer
 import io.embrace.android.embracesdk.internal.telemetry.AppliedLimitType
-import io.embrace.android.embracesdk.internal.telemetry.TelemetryService
+import io.embrace.android.embracesdk.internal.telemetry.InternalTelemetryService
 import io.embrace.android.embracesdk.internal.utils.UuidSource
 import io.embrace.android.embracesdk.internal.utils.UuidSourceImpl
 import okhttp3.OkHttpClient
 
 /**
  * [useKotlinSdk] selects the opentelemetry-kotlin implementation that backs the OTel module.
+ * [clock] supplies every timestamp the recorded telemetry carries.
  */
-internal class TelemetryDestinationHarness(useKotlinSdk: Boolean = false) {
+internal class TelemetryDestinationHarness(
+    useKotlinSdk: Boolean = false,
+    clock: Clock = NormalizedIntervalClock(),
+) {
 
-    private val initModule = TestInitModule()
+    private val initModule = TestInitModule(clock)
     private val otelModule = OpenTelemetryModuleImpl(initModule).apply {
         setOtelBehavior(
             OtelBehaviorImpl(
@@ -67,12 +73,12 @@ internal class TelemetryDestinationHarness(useKotlinSdk: Boolean = false) {
      * but where no per-session span limit is applied
      */
     fun createUncappedSpanService(): SpanService {
-        val validator = DataValidator(telemetryService = NoopTelemetryService)
+        val validator = DataValidator(telemetryService = NoopInternalTelemetryService)
         val factory = EmbraceSpanFactoryImpl(
             openTelemetryClock = EmbClock(initModule.clock),
             spanRepository = otelModule.spanRepository,
             dataValidator = validator,
-            telemetryService = NoopTelemetryService,
+            telemetryService = NoopInternalTelemetryService,
         )
         return SpanServiceImpl(
             spanRepository = otelModule.spanRepository,
@@ -85,10 +91,10 @@ internal class TelemetryDestinationHarness(useKotlinSdk: Boolean = false) {
         ).apply { initializeService(0) }
     }
 
-    private class TestInitModule : InitModule {
-        override val clock: io.embrace.android.embracesdk.internal.clock.Clock = NormalizedIntervalClock()
-        override val telemetryService: TelemetryService = NoopTelemetryService
+    private class TestInitModule(override val clock: Clock) : InitModule {
+        override val telemetryService: InternalTelemetryService = NoopInternalTelemetryService
         override val logger: InternalLogger = InternalLoggerImpl()
+        override val internalErrorHandler: BufferedInternalErrorHandler = BufferedInternalErrorHandler(clock)
         override val systemInfo: SystemInfo = SystemInfo()
         override val uuidSource: UuidSource = UuidSourceImpl()
         override val startupClassifier: StartupClassifier = StartupClassifierImpl()
@@ -97,7 +103,7 @@ internal class TelemetryDestinationHarness(useKotlinSdk: Boolean = false) {
         override val okHttpClient: Lazy<OkHttpClient> = lazyOf(OkHttpClient())
     }
 
-    private object NoopTelemetryService : TelemetryService {
+    private object NoopInternalTelemetryService : InternalTelemetryService {
         override fun onPublicApiCalled(name: String) {
         }
 

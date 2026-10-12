@@ -61,6 +61,7 @@ abstract class StateDataSource<T : Any>(
         }
 
         val oldState = currentState.getAndSet(newState)
+        val outgoingAttributes = if (newState != oldState) outgoingValueAttributes(oldState) else emptyMap()
         val currentStateToken = partStateToken.get()
         // Track the number of transitions dropped by instrumentation that didn't cause this to be invoked
         unrecordedTransitions.updateDroppedByInstrumentation(droppedTransitions)
@@ -76,7 +77,11 @@ abstract class StateDataSource<T : Any>(
                 val transitionRecorded = currentStateToken.update(
                     newValue = newState,
                     transitionTimeMs = transitionTimeMs,
-                    transitionAttributes = transitionAttributes,
+                    transitionAttributes = if (outgoingAttributes.isEmpty()) {
+                        transitionAttributes
+                    } else {
+                        outgoingAttributes + transitionAttributes
+                    },
                     unrecordedTransitions = droppedTransitions,
                 )
                 // If the transition was not recorded by the token, it means the associated session has ended.
@@ -116,6 +121,11 @@ abstract class StateDataSource<T : Any>(
      * Returns true if the data source is currently active
      */
     fun isActive(): Boolean = stateCaptureActive.get()
+
+    /**
+     * Attributes describing the state [value] being left, added to the transition away from it.
+     */
+    protected open fun outgoingValueAttributes(value: T): Map<String, String> = emptyMap()
 
     @CallSuper
     override fun onDataCaptureEnabled() {
@@ -165,15 +175,16 @@ abstract class StateDataSource<T : Any>(
     }
 
     private fun AtomicReference<UnrecordedTransitions>.incrementCount(notInSession: Int = 0, droppedByInstrumentation: Int = 0) {
-        synchronized(this) {
-            set(
-                get().let { oldValue ->
-                    UnrecordedTransitions(
-                        notInSession = oldValue.notInSession + notInSession,
-                        droppedByInstrumentation = oldValue.droppedByInstrumentation + droppedByInstrumentation,
-                    )
-                },
+        while (true) { // CAS loop
+            val oldValue = get()
+            val replacement = UnrecordedTransitions(
+                notInSession = oldValue.notInSession + notInSession,
+                droppedByInstrumentation = oldValue.droppedByInstrumentation + droppedByInstrumentation,
             )
+
+            if (compareAndSet(oldValue, replacement)) {
+                return
+            }
         }
     }
 }

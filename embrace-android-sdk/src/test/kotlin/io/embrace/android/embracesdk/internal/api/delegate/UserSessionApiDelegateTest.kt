@@ -6,8 +6,8 @@ import io.embrace.android.embracesdk.PropertyScope
 import io.embrace.android.embracesdk.UserSessionListener
 import io.embrace.android.embracesdk.fakes.FakeInternalLogger
 import io.embrace.android.embracesdk.fakes.FakeSessionOrchestrator
-import io.embrace.android.embracesdk.fakes.FakeTelemetryService
 import io.embrace.android.embracesdk.fakes.FakeUserSessionPropertiesService
+import io.embrace.android.embracesdk.fakes.OtelSdkMode
 import io.embrace.android.embracesdk.fakes.injection.FakeEssentialServiceModule
 import io.embrace.android.embracesdk.fakes.injection.FakeInitModule
 import io.embrace.android.embracesdk.fakes.injection.FakeUserSessionOrchestrationModule
@@ -33,7 +33,7 @@ internal class UserSessionApiDelegateTest {
     fun setUp() {
         fakeModule = FakeUserSessionOrchestrationModule()
         val moduleInitBootstrapper = ModuleInitBootstrapper(
-            FakeInitModule(),
+            FakeInitModule(otelSdkMode = OtelSdkMode.COMPAT),
             essentialServiceModuleSupplier = { _, _, _, _, _, _, _, _, _ ->
                 FakeEssentialServiceModule()
             },
@@ -45,7 +45,7 @@ internal class UserSessionApiDelegateTest {
         userSessionPropertiesService =
             moduleInitBootstrapper.essentialServiceModule.userSessionPropertiesService as FakeUserSessionPropertiesService
         logger = FakeInternalLogger()
-        sdkCallChecker = SdkCallChecker(logger, FakeTelemetryService())
+        sdkCallChecker = SdkCallChecker(logger)
         sdkCallChecker.started.set(true)
         delegate = UserSessionApiDelegate(moduleInitBootstrapper, sdkCallChecker)
     }

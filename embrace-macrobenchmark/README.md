@@ -5,6 +5,9 @@ starting the next one on each. Each iteration fills the session with telemetry (
 calls `Embrace.endUserSession()` (`session-end`), then waits ~2s for the SDK's queued persistence
 writes so they land in the trace.
 
+Every benchmark runs once per opentelemetry-kotlin implementation (`compat` and `regular`), which
+appear as a suffix on the test name, e.g. `sessionEnd[compat]`.
+
 It wipes app data per iteration because the SDK restores a persisted user session in a new process
 and declines a manual end for an iteration that inherits one. The app depends on
 `:embrace-android-sdk` as a project dependency, so benchmarks measure the working tree.
@@ -21,6 +24,15 @@ Pass `--test` to run a different one:
 ```bash
 scripts/macrobenchmark.sh --out perf/macrobenchmark/scenarios \
     --test io.embrace.android.embracesdk.macrobenchmark.PersistenceScenarioBenchmark
+```
+
+`OtelInitBenchmark` cold-starts the app with each opentelemetry-kotlin implementation and reports
+the `emb-otel-sdk-wrapper-init`, `emb-otel-tracer-init` and `emb-otel-logger-init` sections, to
+compare what assembling the OTel SDK costs in each:
+
+```bash
+scripts/macrobenchmark.sh --out perf/macrobenchmark/otel-init \
+    --test io.embrace.android.embracesdk.macrobenchmark.OtelInitBenchmark
 ```
 
 The two halves are usable separately: `scripts/run-macrobenchmark.sh --help` and
@@ -57,10 +69,11 @@ command rather than passing the module's `testInstrumentationRunnerArguments`.
 scripts/generate-baseline-profile.sh
 ```
 
-That runs `BaselineProfileGenerator` against the app's `baselineProfile` variant, once with each
-opentelemetry-kotlin implementation (compat and regular), and overwrites
-`embrace-android-sdk/src/main/baseline-prof.txt` with the union of both profiles. Needs one
-connected device on API 33+ or rooted.
+That runs `BaselineProfileGenerator` against the app's `baselineProfile` variant on the
+`pixel6Api34` Gradle managed device (API 34 AOSP), once with each opentelemetry-kotlin
+implementation (compat and regular), and overwrites `embrace-android-sdk/src/main/baseline-prof.txt`
+with the union of both profiles. Gradle downloads and boots the emulator itself. The
+`Generate Baseline Profile` workflow runs the same script on CI and opens a PR with the result.
 
 ## Traces
 
@@ -92,5 +105,5 @@ adb shell settings delete global embrace_pct_otel_kotlin_sdk           # SDK def
 ```
 
 The app turns those into a remote config on disk, which the SDK reads at startup, and deletes the
-binary config cache that would otherwise take priority. `BaselineProfileGenerator` sets and clears
-`embrace_pct_otel_kotlin_sdk` itself.
+binary config cache that would otherwise take priority. Every benchmark and `BaselineProfileGenerator`
+set and clear `embrace_pct_otel_kotlin_sdk` themselves, so setting it by hand has no effect on them.

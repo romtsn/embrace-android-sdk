@@ -2,6 +2,7 @@ package io.embrace.android.embracesdk.internal.otel.sdk
 
 import io.embrace.android.embracesdk.internal.config.instrumented.InstrumentedConfigImpl
 import io.embrace.android.embracesdk.internal.config.instrumented.schema.OtelLimitsConfig
+import io.embrace.android.embracesdk.internal.logging.InternalErrorHandler
 import io.embrace.android.embracesdk.internal.otel.config.OtelSdkConfig
 import io.embrace.android.embracesdk.internal.otel.config.getMaxTotalAttributeCount
 import io.embrace.android.embracesdk.internal.otel.config.getMaxTotalEventCount
@@ -29,6 +30,7 @@ class OtelSdkWrapper(
     otelClock: Clock,
     configuration: OtelSdkConfig,
     spanService: SpanService,
+    errorHandler: InternalErrorHandler,
     limits: OtelLimitsConfig = InstrumentedConfigImpl.otelLimits,
     val useKotlinSdk: Boolean,
 ) {
@@ -58,8 +60,26 @@ class OtelSdkWrapper(
         }
     }
 
-    @Suppress("DEPRECATION", "SpreadOperator")
     private val kotlinApi: OpenTelemetry by lazy {
+        try {
+            createOtelInstance(otelClock, configuration, limits, errorHandler)
+        } catch (exc: NoClassDefFoundError) {
+            throw LinkageError(
+                "Please enable library desugaring in your project to use the Embrace SDK. " +
+                    "This is required if you target API levels below 24. For instructions, please see " +
+                    "https://developer.android.com/studio/write/java8-support#library-desugaring",
+                exc,
+            )
+        }
+    }
+
+    @Suppress("DEPRECATION", "SpreadOperator")
+    private fun createOtelInstance(
+        otelClock: Clock,
+        configuration: OtelSdkConfig,
+        limits: OtelLimitsConfig,
+        errorHandler: InternalErrorHandler,
+    ): OpenTelemetry =
         createSdkOtelInstance(
             useKotlinSdk = useKotlinSdk,
             tracerProvider = {
@@ -87,8 +107,8 @@ class OtelSdkWrapper(
                 }
             },
             clock = otelClock,
+            errorHandler = OtelSdkErrorHandler(errorHandler),
         )
-    }
 
     val openTelemetryKotlin: OpenTelemetry by lazy {
         EmbOpenTelemetry(

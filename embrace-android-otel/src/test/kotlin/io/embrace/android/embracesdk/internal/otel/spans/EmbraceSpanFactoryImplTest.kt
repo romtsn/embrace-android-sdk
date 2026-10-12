@@ -1,8 +1,8 @@
 package io.embrace.android.embracesdk.internal.otel.spans
 
 import io.embrace.android.embracesdk.fakes.FakeClock
+import io.embrace.android.embracesdk.fakes.FakeInternalTelemetryService
 import io.embrace.android.embracesdk.fakes.FakeOtelKotlinClock
-import io.embrace.android.embracesdk.fakes.FakeTelemetryService
 import io.embrace.android.embracesdk.fakes.OtelSdkMode
 import io.embrace.android.embracesdk.fakes.fakeOpenTelemetry
 import io.embrace.android.embracesdk.internal.arch.schema.EmbType
@@ -47,8 +47,8 @@ internal class EmbraceSpanFactoryImplTest(
         embraceSpanFactory = EmbraceSpanFactoryImpl(
             openTelemetryClock = openTelemetryClock,
             spanRepository = spanRepository,
-            dataValidator = DataValidator(telemetryService = FakeTelemetryService()),
-            telemetryService = FakeTelemetryService(),
+            dataValidator = DataValidator(telemetryService = FakeInternalTelemetryService()),
+            telemetryService = FakeInternalTelemetryService(),
         )
     }
 
@@ -61,7 +61,7 @@ internal class EmbraceSpanFactoryImplTest(
                 internal = false,
                 private = false,
                 tracer = tracer,
-                openTelemetry = fakeOpenTelemetry(otelSdkMode.useKotlinSdk),
+                openTelemetry = fakeOpenTelemetry(otelSdkMode),
             ),
         )
         assertTrue(span.start(clock.now()))
@@ -84,7 +84,7 @@ internal class EmbraceSpanFactoryImplTest(
                 internal = true,
                 private = true,
                 tracer = tracer,
-                openTelemetry = fakeOpenTelemetry(otelSdkMode.useKotlinSdk),
+                openTelemetry = fakeOpenTelemetry(otelSdkMode),
             ),
         )
         assertTrue(span.start(clock.now()))
@@ -105,7 +105,7 @@ internal class EmbraceSpanFactoryImplTest(
                 internal = true,
                 private = false,
                 tracer = tracer,
-                openTelemetry = fakeOpenTelemetry(otelSdkMode.useKotlinSdk),
+                openTelemetry = fakeOpenTelemetry(otelSdkMode),
             ),
         )
         assertTrue(span.start(clock.now()))
@@ -126,7 +126,7 @@ internal class EmbraceSpanFactoryImplTest(
                 internal = false,
                 private = false,
                 tracer = tracer,
-                openTelemetry = fakeOpenTelemetry(otelSdkMode.useKotlinSdk),
+                openTelemetry = fakeOpenTelemetry(otelSdkMode),
             ),
         )
         val spanBuilder = OtelSpanStartArgs(
@@ -136,7 +136,7 @@ internal class EmbraceSpanFactoryImplTest(
             private = false,
             tracer = tracer,
             parentCtx = parent.asNewContext(),
-            openTelemetry = fakeOpenTelemetry(otelSdkMode.useKotlinSdk),
+            openTelemetry = fakeOpenTelemetry(otelSdkMode),
         )
 
         with(embraceSpanFactory.create(otelSpanStartArgs = spanBuilder)) {

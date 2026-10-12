@@ -24,6 +24,7 @@ import io.embrace.android.embracesdk.internal.injection.EssentialServiceModule
 import io.embrace.android.embracesdk.internal.injection.EssentialServiceModuleImpl
 import io.embrace.android.embracesdk.internal.injection.InitModule
 import io.embrace.android.embracesdk.internal.injection.ModuleInitBootstrapper
+import io.embrace.android.embracesdk.internal.instance.SdkApiDispatcher
 import io.embrace.android.embracesdk.internal.utils.EmbTrace
 import io.embrace.android.embracesdk.internal.utils.Provider
 import io.embrace.android.embracesdk.testframework.actions.EmbraceActionInterface
@@ -88,10 +89,9 @@ import org.junit.rules.ExternalResource
 internal class SdkIntegrationTestRule(
 
     /**
-     * The opentelemetry-kotlin implementation to run against. When null, the test controls it via [RemoteConfig],
-     * which selects the compat implementation by default.
+     * The opentelemetry-kotlin implementation to run against.
      */
-    val otelSdkMode: OtelSdkMode? = null,
+    val otelSdkMode: OtelSdkMode,
     private val embraceSetupInterfaceSupplier: Provider<EmbraceSetupInterface> = { EmbraceSetupInterface() },
 ) : ExternalResource() {
 
@@ -115,6 +115,7 @@ internal class SdkIntegrationTestRule(
     private lateinit var spanExporter: FilteredSpanExporter
     private lateinit var logExporter: FilteredLogExporter
     private lateinit var embraceImpl: EmbraceImpl
+    private lateinit var sdkApi: SdkApiDispatcher
     private lateinit var baseUrl: String
 
     lateinit var bootstrapper: ModuleInitBootstrapper
@@ -137,9 +138,9 @@ internal class SdkIntegrationTestRule(
         assertAction: EmbracePayloadAssertionInterface.() -> Unit = {},
         otelExportAssertion: EmbraceOtelExportAssertionInterface.() -> Unit = {},
     ) {
-        val localConfig = otelSdkMode?.applyTo(instrumentedConfig) ?: instrumentedConfig
-        val persistedConfig = otelSdkMode?.applyTo(persistedRemoteConfig) ?: persistedRemoteConfig
-        val serverConfig = otelSdkMode?.applyTo(serverResponseConfig) ?: serverResponseConfig
+        val localConfig = otelSdkMode.applyTo(instrumentedConfig)
+        val persistedConfig = otelSdkMode.applyTo(persistedRemoteConfig)
+        val serverConfig = otelSdkMode.applyTo(serverResponseConfig)
         setup = embraceSetupInterfaceSupplier()
         val deliveryTracer = DeliveryTracer()
         val apiServer = FakeApiServer(serverConfig, deliveryTracer, serverResponseConfigJson)
@@ -150,14 +151,14 @@ internal class SdkIntegrationTestRule(
         }
         baseUrl = server.url("api").toString()
 
-        preSdkStart = EmbracePreSdkStartInterface(setup) { embraceImpl }
+        preSdkStart = EmbracePreSdkStartInterface(setup) { sdkApi }
         bootstrapper = setup.createBootstrapper(
             localConfig.copy(
                 baseUrls = FakeBaseUrlConfig(configImpl = baseUrl, dataImpl = baseUrl)
             ),
             deliveryTracer
         )
-        action = EmbraceActionInterface(setup, bootstrapper) { embraceImpl }
+        action = EmbraceActionInterface(setup, bootstrapper) { sdkApi }
         payloadAssertion = EmbracePayloadAssertionInterface(bootstrapper, apiServer)
         spanExporter = FilteredSpanExporter()
         logExporter = FilteredLogExporter()
@@ -166,6 +167,7 @@ internal class SdkIntegrationTestRule(
         setupAction(setup)
         with(setup) {
             embraceImpl = EmbraceImpl(bootstrapper = bootstrapper)
+            sdkApi = SdkApiDispatcher(embraceImpl, embraceImpl.telemetryService)
             preSdkStartAction(preSdkStart)
             //TODO: Filtered span and log exporters should be migrated to Kotlin.
             embraceImpl.addSpanExporter(spanExporter.toOtelKotlinSpanExporter())
@@ -187,10 +189,10 @@ internal class SdkIntegrationTestRule(
                     expectSdkToStart,
                     embraceImpl.isStarted
                 )
-                otelSdkMode?.takeIf { embraceImpl.isStarted }?.let { mode ->
+                if (embraceImpl.isStarted) {
                     assertEquals(
-                        "SDK did not select the $mode opentelemetry-kotlin implementation.",
-                        mode.useKotlinSdk,
+                        "SDK did not select the $otelSdkMode opentelemetry-kotlin implementation.",
+                        otelSdkMode.useKotlinSdk,
                         bootstrapper.openTelemetryModule.otelSdkWrapper.useKotlinSdk,
                     )
                 }
