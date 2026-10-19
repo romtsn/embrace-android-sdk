@@ -7,11 +7,27 @@ plugins {
 repositories {
     google()
     mavenCentral()
-    mavenLocal()
+    maven { url = uri(providers.gradleProperty("integration_repo").get()) }
 }
 
 integrationTest.configureAndroidProject(project)
 
 embrace {
     autoAddEmbraceDependencies.set(true)
+}
+
+android {
+    buildTypes {
+        // builds with src/overrides/embrace-config.json, which sets non-default values
+        overrides {
+            initWith(release)
+            minifyEnabled = false
+        }
+    }
+    // native libs are hashed and injected into Base64SharedObjectFilesMapImpl on release
+    externalNativeBuild {
+        cmake {
+            path("src/main/cpp/CMakeLists.txt")
+        }
+    }
 }

@@ -19,7 +19,7 @@ class IsolatedProjectsTest {
     fun build() {
         rule.runTest(
             fixture = "android-nested",
-            task = "build",
+            tasks = listOf("build"),
             additionalArgs = listOf(
                 "-Dorg.gradle.unsafe.isolated-projects=true",
             ),
@@ -31,6 +31,7 @@ class IsolatedProjectsTest {
                         assertTrue(checkNotNull(isIsolatedProjectsEnabled))
                     },
                 )
+                verifyJvmMappingRequestsSent(1)
             },
         )
     }

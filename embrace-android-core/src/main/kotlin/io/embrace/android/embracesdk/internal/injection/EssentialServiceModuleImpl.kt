@@ -112,7 +112,7 @@ class EssentialServiceModuleImpl(
                 coreModule.store,
                 initModule.clock,
                 initModule.logger,
-            )
+            ).apply { recordInstallDateIfAbsent() }
         }
     }
 
@@ -122,5 +122,10 @@ class EssentialServiceModuleImpl(
             telemetryService = initModule.telemetryService,
             telemetryDestination = telemetryDestination,
         )
+    }
+
+    override fun close() {
+        runCatching { processStateTracker.close() }
+        runCatching { networkConnectivityService.close() }
     }
 }

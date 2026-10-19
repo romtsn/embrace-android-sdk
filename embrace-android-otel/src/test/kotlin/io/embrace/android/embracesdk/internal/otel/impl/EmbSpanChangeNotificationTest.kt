@@ -5,7 +5,6 @@ import io.embrace.android.embracesdk.fakes.FakeInternalTelemetryService
 import io.embrace.android.embracesdk.fakes.FakeOtelKotlinClock
 import io.embrace.android.embracesdk.fakes.OtelSdkMode
 import io.embrace.android.embracesdk.internal.arch.schema.EmbType
-import io.embrace.android.embracesdk.internal.clock.nanosToMillis
 import io.embrace.android.embracesdk.internal.otel.createSdkOtelInstance
 import io.embrace.android.embracesdk.internal.otel.inheritedApiMethodNames
 import io.embrace.android.embracesdk.internal.otel.sdk.DataValidator
@@ -150,7 +149,7 @@ internal class EmbSpanChangeNotificationTest(
     fun `EmbInvalidSpan never notifies`() {
         mutators.forEach { (name, mutate) ->
             observed.clear()
-            EmbInvalidSpan(otelInstance).mutate()
+            EmbInvalidSpan().mutate()
             assertEquals("$name should not notify", emptyList<EmbraceSdkSpan>(), observed)
         }
     }
@@ -161,14 +160,13 @@ internal class EmbSpanChangeNotificationTest(
             spanRepository = spanRepository,
             dataValidator = dataValidator,
             canStartNewSpan = { _, _, _ -> true },
-            initCallback = {},
             embraceSpanFactory = spanFactory,
-            tracerSupplier = { tracer },
-            openTelemetrySupplier = { otelInstance },
-        ).apply { initializeService(otelClock.now().nanosToMillis()) }
+            tracer = tracer,
+            openTelemetry = otelInstance,
+        )
 
         observed.clear()
-        EmbTracerProvider(otelInstance, spanService, otelClock)
+        EmbTracerProvider(otelInstance, { spanService }, otelClock)
             .getTracer("test-tracer")
             .startSpan("traced-span") {
                 setStringAttribute("first", "1")
@@ -187,7 +185,7 @@ internal class EmbSpanChangeNotificationTest(
 
     private fun declaredApi(): Set<String> = Span::class.java.inheritedApiMethodNames()
 
-    private fun wrap(impl: EmbraceSdkSpan) = EmbSpan(impl = impl, clock = otelClock, openTelemetry = otelInstance)
+    private fun wrap(impl: EmbraceSdkSpan) = EmbSpan(impl = impl, clock = otelClock)
 
     private fun createStartedSpan(): EmbraceSdkSpan = spanFactory.create(
         otelSpanStartArgs = OtelSpanStartArgs(

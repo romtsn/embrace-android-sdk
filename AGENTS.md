@@ -27,12 +27,14 @@ JVM level than it compiles with, so check `kotlinCoreLibrariesVersion` before us
 
 ### Key Commands
 
-```bash
-# Full build (compile + lint + detekt + unit tests)
-./gradlew build
+Most changesets should be verified using `./gradlew verify`. Additional tasks should be used depending on the change.
 
-# Build excluding slow integration tests
-./gradlew build -x embrace-gradle-plugin-integration-tests:test
+```bash
+# Recommended: static analysis + unit tests + one Gradle plugin integration sanity test
+./gradlew verify
+
+# Full build (compile + lint + detekt + unit tests + every Gradle plugin integration test)
+./gradlew build
 
 # Run tests for a specific module
 ./gradlew :embrace-android-core:test
@@ -40,8 +42,8 @@ JVM level than it compiles with, so check `kotlinCoreLibrariesVersion` before us
 # Run integration tests (in the SDK module)
 ./gradlew :embrace-android-sdk:test
 
-# Code coverage report (XML)
-./gradlew koverXmlReport
+# Code coverage report (XML). Kover is only applied when the CI env var is set, and only instruments tests with -Pembrace.coverage
+CI=true ./gradlew koverXmlReport -Pembrace.coverage
 
 # Build the example app
 cd examples/ExampleApp && ./gradlew bundleRelease
@@ -120,7 +122,7 @@ InitModule -> CoreModule -> EssentialServiceModule -> ...
 - Each DI module is defined as an **interface** in `embrace-android-core/.../injection/`
 - Implementations are `*Impl` classes (e.g., `InitModuleImpl`)
 - Fake implementations exist in `embrace-test-fakes` for testing (e.g., `FakeInitModule`)
-- The `ModuleInitBootstrapper` in `embrace-android-sdk` wires all modules together
+- `InitializedModuleGraph` in `embrace-android-sdk` wires all modules together
 
 ---
 
@@ -160,7 +162,9 @@ InitModule -> CoreModule -> EssentialServiceModule -> ...
 **Gradle plugin integration tests**: `embrace-gradle-plugin-integration-tests`
 
 - Uses Gradle TestKit
+- Run with `./gradlew embrace-gradle-plugin-integration-tests:test -PintegrationPublish`; the flag skips javadoc/source jars when publishing SDK modules to mavenLocal
 - Supports remote JVM debugging (see module README)
+- `sanityTest` runs a single case and is part of `verify`; the full suite is slow, so run it only for Gradle plugin changes
 
 ### Fake Conventions
 
@@ -220,7 +224,7 @@ From `CONTRIBUTING.md`:
 - Lint suppression must be done in code with explanation
 - Commits should be reasonably small (<500 lines diff) with proper messages
 - PR template has `Goal` and `Testing` sections
-- Verify changes with `./gradlew build -x embrace-gradle-plugin-integration-tests:test`
+- Verify changes with `./gradlew verify`; run `./gradlew :embrace-gradle-plugin-integration-tests:test` too when changing the Gradle plugin
 
 ---
 

@@ -14,6 +14,7 @@ import io.embrace.android.embracesdk.fixtures.FAKE_SESSION_PART_ID_2
 import io.embrace.android.embracesdk.internal.arch.attrs.toEmbraceAttributeName
 import io.embrace.android.embracesdk.internal.arch.schema.AppTerminationCause
 import io.embrace.android.embracesdk.internal.arch.schema.EmbType
+import io.embrace.android.embracesdk.internal.clock.millisToNanos
 import io.embrace.android.embracesdk.internal.clock.nanosToMillis
 import io.embrace.android.embracesdk.internal.otel.sdk.findAttributeValue
 import io.embrace.android.embracesdk.internal.otel.spans.hasEmbraceAttribute
@@ -22,6 +23,7 @@ import io.embrace.android.embracesdk.internal.payload.Envelope
 import io.embrace.android.embracesdk.internal.payload.NativeCrashData
 import io.embrace.android.embracesdk.internal.payload.SessionPartPayload
 import io.embrace.android.embracesdk.internal.payload.Span
+import io.embrace.android.embracesdk.internal.payload.SpanEvent
 import io.embrace.android.embracesdk.internal.session.getSessionPartSpan
 import io.embrace.android.embracesdk.internal.session.getUserSessionProperties
 import io.embrace.android.embracesdk.semconv.EmbSessionAttributes
@@ -60,11 +62,73 @@ internal class SessionPartResurrectorTest {
     }
 
     @Test
-    fun `a failed span ends at the session span's last heartbeat`() {
+    fun `a failed span ends at the latest time a span started when nothing later is recorded`() {
         val deadPart = incompleteEnvelope()
+        val latestSnapshotStart = checkNotNull(deadPart.data.spanSnapshots).maxOf { checkNotNull(it.startTimeNanos) }
         val resurrected = checkNotNull(resurrect(deadPart))
         checkNotNull(resurrected.data.spans).forEach { span ->
-            assertEquals(span.endTimeNanos?.nanosToMillis(), checkNotNull(span.endTimeNanos).nanosToMillis())
+            assertEquals(latestSnapshotStart.nanosToMillis(), span.endTimeMs())
+        }
+    }
+
+    @Test
+    fun `an event later than every span start and end does not move the end`() {
+        val deadPart = incompleteEnvelope()
+        val latestSnapshotStart = checkNotNull(deadPart.data.spanSnapshots).maxOf { checkNotNull(it.startTimeNanos) }
+        val withLateEvent = deadPart.withSessionSpanEvent(
+            SpanEvent(name = "breadcrumb", timestampNanos = latestSnapshotStart + 7_000_000_000L),
+        )
+
+        val resurrected = checkNotNull(resurrect(withLateEvent))
+        checkNotNull(resurrected.data.spans).forEach { span ->
+            assertEquals(latestSnapshotStart.nanosToMillis(), span.endTimeMs())
+        }
+    }
+
+    @Test
+    fun `a failed span ends when the part was last written if that is later than every span start and end`() {
+        val deadPart = incompleteEnvelope()
+        val latestSnapshotStart = checkNotNull(deadPart.data.spanSnapshots).maxOf { checkNotNull(it.startTimeNanos) }
+        val lastWrittenMs = latestSnapshotStart.nanosToMillis() + 7_000L
+        val resurrected = checkNotNull(resurrect(deadPart, lastWrittenMs = lastWrittenMs))
+        checkNotNull(resurrected.data.spans).forEach { span ->
+            assertEquals(lastWrittenMs, span.endTimeMs())
+        }
+    }
+
+    @Test
+    fun `a span end or event later than the last written time does not move the end`() {
+        val deadPart = incompleteEnvelope()
+        val snapshots = checkNotNull(deadPart.data.spanSnapshots)
+        val lastWrittenMs = snapshots.maxOf { checkNotNull(it.startTimeNanos) }.nanosToMillis() + 7_000L
+        val lateNanos = (lastWrittenMs + 60_000L).millisToNanos()
+        val lateCompleted = snapshots.last().copy(spanId = "late-completed-span-id", endTimeNanos = lateNanos)
+        val withLateTelemetry = deadPart
+            .withSessionSpanEvent(SpanEvent(name = "breadcrumb", timestampNanos = lateNanos))
+            .let { it.copy(data = it.data.copy(spans = listOf(lateCompleted))) }
+
+        val resurrected = checkNotNull(resurrect(withLateTelemetry, lastWrittenMs = lastWrittenMs))
+        val spans = checkNotNull(resurrected.data.spans)
+        assertEquals(lateNanos, spans.single { it.spanId == lateCompleted.spanId }.endTimeNanos)
+        spans.filter { it.spanId != lateCompleted.spanId }.forEach { span ->
+            assertEquals(lastWrittenMs, span.endTimeMs())
+        }
+    }
+
+    @Test
+    fun `a span that started after the last written time ends when it started and does not move the end`() {
+        val deadPart = incompleteEnvelope()
+        val snapshots = checkNotNull(deadPart.data.spanSnapshots)
+        val lastWrittenMs = snapshots.maxOf { checkNotNull(it.startTimeNanos) }.nanosToMillis() + 7_000L
+        val lateStartNanos = (lastWrittenMs + 60_000L).millisToNanos()
+        val lateStarted = snapshots.last().copy(spanId = "late-started-span-id", startTimeNanos = lateStartNanos)
+        val withLateStart = deadPart.copy(data = deadPart.data.copy(spanSnapshots = snapshots + lateStarted))
+
+        val resurrected = checkNotNull(resurrect(withLateStart, lastWrittenMs = lastWrittenMs))
+        val spans = checkNotNull(resurrected.data.spans)
+        assertEquals(lateStartNanos, spans.single { it.spanId == lateStarted.spanId }.endTimeNanos)
+        spans.filter { it.spanId != lateStarted.spanId }.forEach { span ->
+            assertEquals(lastWrittenMs, span.endTimeMs())
         }
     }
 
@@ -85,7 +149,7 @@ internal class SessionPartResurrectorTest {
         checkNotNull(resurrected.data.spans)
             .filter { it.spanId != carriedOver.spanId }
             .forEach { span ->
-                assertEquals(latestSnapshotStart.nanosToMillis(), checkNotNull(span.endTimeNanos).nanosToMillis())
+                assertEquals(latestSnapshotStart.nanosToMillis(), span.endTimeMs())
                 assertTrue(checkNotNull(span.endTimeNanos) >= checkNotNull(span.startTimeNanos))
             }
     }
@@ -217,6 +281,7 @@ internal class SessionPartResurrectorTest {
         crash: NativeCrashData? = null,
         userSessionTerminationReason: String? = null,
         isBackgroundOnly: Boolean = false,
+        lastWrittenMs: Long? = null,
     ): Envelope<SessionPartPayload>? {
         val processed = mutableListOf<NativeCrashData>()
         val resurrected = resurrector.resurrect(
@@ -227,6 +292,7 @@ internal class SessionPartResurrectorTest {
             onNativeCrashProcessed = processed::add,
             userSessionTerminationReason = userSessionTerminationReason,
             isBackgroundOnly = isBackgroundOnly,
+            lastWrittenMs = lastWrittenMs,
         )
         assertEquals(listOfNotNull(crash.takeIf { nativeCrashService.nativeCrashesSent.isNotEmpty() }), processed)
         return resurrected
@@ -253,15 +319,25 @@ internal class SessionPartResurrectorTest {
         symbols = null,
     )
 
+    /**
+     * The span's end time at the millisecond resolution a resurrected part's end time is estimated at.
+     */
+    private fun Span.endTimeMs(): Long = checkNotNull(endTimeNanos).nanosToMillis()
+
     private fun Envelope<SessionPartPayload>.sessionSpanAttribute(key: String): String? =
         getSessionPartSpan()?.attributes?.findAttributeValue(key)
 
-    private fun Envelope<SessionPartPayload>.withSessionSpanAttribute(key: String, value: String) = copy(
+    private fun Envelope<SessionPartPayload>.withSessionSpanAttribute(key: String, value: String) =
+        withSessionSpan { span -> span.copy(attributes = (span.attributes ?: emptyList()) + Attribute(key, value)) }
+
+    private fun Envelope<SessionPartPayload>.withSessionSpanEvent(event: SpanEvent) =
+        withSessionSpan { span -> span.copy(events = (span.events ?: emptyList()) + event) }
+
+    private fun Envelope<SessionPartPayload>.withSessionSpan(update: (Span) -> Span) = copy(
         data = data.copy(
             spanSnapshots = checkNotNull(data.spanSnapshots).map { span ->
                 when {
-                    span.hasEmbraceAttribute(EmbType.Ux.Session) ->
-                        span.copy(attributes = (span.attributes ?: emptyList()) + Attribute(key, value))
+                    span.hasEmbraceAttribute(EmbType.Ux.Session) -> update(span)
                     else -> span
                 }
             },

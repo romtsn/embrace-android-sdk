@@ -16,16 +16,15 @@ import kotlinx.serialization.builtins.serializer
 
 internal class NativeCrashDataSourceImpl(
     private val nativeCrashProcessor: NativeCrashProcessor,
+    private val nativeCrashHandlerInstaller: NativeCrashHandlerInstaller,
     private val args: InstrumentationArgs,
 ) : NativeCrashDataSource, DataSourceImpl(
     args = args,
     limitStrategy = NoopLimitStrategy,
     instrumentationName = "native_crash_data_source",
 ) {
-    override fun getAndSendNativeCrash(): NativeCrashData? {
-        return nativeCrashProcessor.getLatestNativeCrash()?.apply {
-            sendNativeCrash(nativeCrash = this, userSessionProperties = emptyMap(), metadata = emptyMap())
-        }
+    override fun onDataCaptureDisabled() {
+        nativeCrashHandlerInstaller.disable()
     }
 
     override fun getNativeCrashes(): List<NativeCrashData> = nativeCrashProcessor.getNativeCrashes()
@@ -90,5 +89,9 @@ internal class NativeCrashDataSourceImpl(
 
     override fun deleteAllNativeCrashes() {
         nativeCrashProcessor.deleteAllNativeCrashes()
+    }
+
+    override fun deleteNativeCrash(nativeCrash: NativeCrashData) {
+        nativeCrashProcessor.deleteNativeCrash(nativeCrash)
     }
 }

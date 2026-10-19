@@ -1,8 +1,7 @@
 package io.embrace.android.embracesdk.internal.instrumentation.crash.ndk
 
-import androidx.test.core.app.ApplicationProvider
-import androidx.test.ext.junit.runners.AndroidJUnit4
 import io.embrace.android.embracesdk.fakes.FakeInstrumentationArgs
+import io.embrace.android.embracesdk.fakes.FakeNativeCrashHandlerInstaller
 import io.embrace.android.embracesdk.fakes.FakeNativeCrashProcessor
 import io.embrace.android.embracesdk.internal.arch.attrs.toEmbraceAttributeName
 import io.embrace.android.embracesdk.internal.arch.schema.EmbType
@@ -16,34 +15,36 @@ import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.nullable
 import kotlinx.serialization.builtins.serializer
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
-import org.junit.runner.RunWith
 
-@RunWith(AndroidJUnit4::class)
 internal class NativeCrashDataSourceImplTest {
 
     private lateinit var crashProcessor: FakeNativeCrashProcessor
     private lateinit var args: FakeInstrumentationArgs
     private lateinit var nativeCrashDataSource: NativeCrashDataSourceImpl
+    private lateinit var installer: FakeNativeCrashHandlerInstaller
 
     @Before
     fun setUp() {
         crashProcessor = FakeNativeCrashProcessor()
-        args = FakeInstrumentationArgs(ApplicationProvider.getApplicationContext())
+        args = FakeInstrumentationArgs()
+        installer = FakeNativeCrashHandlerInstaller()
         nativeCrashDataSource = NativeCrashDataSourceImpl(
             nativeCrashProcessor = crashProcessor,
+            nativeCrashHandlerInstaller = installer,
             args = args,
         )
     }
 
     @Test
-    fun `native crash sent when there is one to be found`() {
-        crashProcessor.addNativeCrashData(testNativeCrashData)
-        assertNotNull(nativeCrashDataSource.getAndSendNativeCrash())
-        assertEquals(1, args.destination.logEvents.size)
+    fun `disabling data capture disables the native crash handler`() {
+        assertFalse(installer.disabled)
+        nativeCrashDataSource.onDataCaptureDisabled()
+        assertTrue(installer.disabled)
     }
 
     @Test

@@ -13,9 +13,16 @@ import java.nio.file.Files
 import java.util.Properties
 import java.util.concurrent.atomic.AtomicInteger
 
+private const val CHECK_RELEASE_BUILDS = "android.lint.checkReleaseBuilds"
+
 class PluginIntegrationTestRule : ExternalResource() {
 
     private val uniqueDirName: AtomicInteger = AtomicInteger(0)
+    private val rootDir: File = File(System.getProperty("user.dir")).parentFile
+
+    // TestKit's Gradle user home lives outside build/ so that `./gradlew clean` doesn't discard warm caches
+    private val testKitDir: File = System.getenv("EMBRACE_TESTKIT_DIR")?.let(::File)
+        ?: File(System.getProperty("user.home"), ".gradle/embrace-testkit")
 
     private var tmpDir: File? = null
     private lateinit var server: MockWebServer
@@ -45,7 +52,8 @@ class PluginIntegrationTestRule : ExternalResource() {
      * can be written this way if you need to run something once, then assert that the file system
      * was changed appropriately. If you need to run multiple builds for one test, e.g. in order
      * to test that a task handles caching correctly, then you can simply call this function
-     * multiple times in a single JUnit test case.
+     * multiple times in a single JUnit test case. The fake API server is reset at the start of each
+     * call, so assertions only observe requests made by the current build.
      */
     @Suppress("LongParameterList")
     fun runTest(
@@ -56,9 +64,9 @@ class PluginIntegrationTestRule : ExternalResource() {
         fixture: String,
 
         /**
-         * The name of the task to run.
+         * The names of the tasks to run in a single build. Each task is asserted to have [expectedOutcome].
          */
-        task: String = "testTask",
+        tasks: List<String> = listOf("testTask"),
 
         /**
          * The versions of Gradle/AGP to use.
@@ -103,12 +111,6 @@ class PluginIntegrationTestRule : ExternalResource() {
         attachDebugger: Boolean = false,
 
         /**
-         * Whether dependencies should be refreshed. This prevents the configuration cache from being reused, so
-         * tests that assert on configuration cache reuse should disable it for subsequent builds.
-         */
-        refreshDependencies: Boolean = true,
-
-        /**
          * Custom assertions to run after the build has finished. The assertions should focus on
          * the state of the file system.
          */
@@ -124,14 +126,14 @@ class PluginIntegrationTestRule : ExternalResource() {
         // invoked multiple times per test case
         val dir = tmpDir ?: prepareTempDirectory(fixture, projectType, androidProjectRoot)
         tmpDir = dir
+        apiServer.reset()
         val args = prepareCommandArgs(
-            task,
+            tasks,
             projectType,
             baseUrl,
             additionalArgs,
             attachDebugger,
             testMatrix,
-            refreshDependencies,
         )
 
         // run any preconditions before the build
@@ -139,7 +141,7 @@ class PluginIntegrationTestRule : ExternalResource() {
         val result = executeGradleBuild(args, testMatrix.gradle, expectedExceptionMessage != null)
 
         // run assertions on the build outcome
-        assertTaskOutcome(result, task, expectedOutcome, expectedExceptionMessage)
+        assertTaskOutcomes(result, tasks, expectedOutcome, expectedExceptionMessage)
         assertionInterface.buildOutput = result.output
         assertionInterface.assertions(dir)
     }
@@ -205,6 +207,7 @@ class PluginIntegrationTestRule : ExternalResource() {
     ): BuildResult {
         val runner = GradleRunner.create()
             .withProjectDir(tmpDir)
+            .withTestKitDir(testKitDir)
             .withArguments(args)
             .withGradleVersion(gradleVersion)
             .forwardStdOutput(System.out.writer())
@@ -221,21 +224,15 @@ class PluginIntegrationTestRule : ExternalResource() {
      * Adds some additional arguments to the gradle build for better performance of the test suite.
      */
     private fun prepareCommandArgs(
-        task: String,
+        tasks: List<String>,
         projectType: ProjectType,
         baseUrl: String?,
         additionalArgs: List<String>,
         attachDebugger: Boolean,
         testMatrix: TestMatrix,
-        refreshDependencies: Boolean,
     ): List<String> {
-        val args = mutableListOf(task)
+        val args = tasks.toMutableList()
         args.addAll(additionalArgs)
-        if (refreshDependencies) {
-            // fixtures consume io.embrace:*:<version>-SNAPSHOT from mavenLocal. Force a refresh
-            // to avoid CI jobs picking up old artifacts
-            args.add("--refresh-dependencies")
-        }
         args.addAll(
             listOf(
                 "--stacktrace",
@@ -248,12 +245,17 @@ class PluginIntegrationTestRule : ExternalResource() {
                 "-Pagp_version=${testMatrix.agp}",
                 "-Pkotlin_version=${testMatrix.kotlin}",
                 "-Pplugin_snapshot_version=${loadSnapshotVersion()}",
+                "-Pintegration_repo=${File(rootDir, "build/integration-repo").toURI()}",
                 "-PcompileAndTargetSdk=${testMatrix.compileAndTargetSdk}",
             ),
         )
         // Android projects currently require this flag to compile
         if (projectType == ProjectType.ANDROID) {
             args.add("-Pandroid.useAndroidX=true")
+        }
+        // skip lintVitalRelease by default as it's slow
+        if (additionalArgs.none { it.startsWith("-P$CHECK_RELEASE_BUILDS=") }) {
+            args.add("-P$CHECK_RELEASE_BUILDS=false")
         }
         if (attachDebugger) {
             println(
@@ -271,7 +273,6 @@ class PluginIntegrationTestRule : ExternalResource() {
     }
 
     private fun loadSnapshotVersion(): String {
-        val rootDir = File(System.getProperty("user.dir")).parentFile
         val file = File(rootDir, "gradle.properties")
         file.inputStream().buffered().use {
             Properties().apply {
@@ -282,11 +283,11 @@ class PluginIntegrationTestRule : ExternalResource() {
     }
 
     /**
-     * Asserts the task executed with the expected outcome. Generally speaking this will be SUCCESS.
+     * Asserts each task executed with the expected outcome. Generally speaking this will be SUCCESS.
      */
-    private fun assertTaskOutcome(
+    private fun assertTaskOutcomes(
         result: BuildResult,
-        task: String,
+        tasks: List<String>,
         expectedOutcome: TaskOutcome,
         exceptionExpected: String?,
     ) {
@@ -294,9 +295,10 @@ class PluginIntegrationTestRule : ExternalResource() {
             assertTrue(result.output.contains(exceptionExpected))
             return
         }
-        val buildTask = result.tasks.singleOrNull { it.path == ":$task" || it.path == ":app:$task" }
-            ?: error("Task '$task' not found in result.")
-        val outcome = buildTask.outcome
-        assertEquals(expectedOutcome, outcome)
+        tasks.forEach { task ->
+            val buildTask = result.tasks.singleOrNull { it.path == ":$task" || it.path == ":app:$task" }
+                ?: error("Task '$task' not found in result.")
+            assertEquals("Unexpected outcome for task '$task'", expectedOutcome, buildTask.outcome)
+        }
     }
 }

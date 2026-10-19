@@ -1,19 +1,11 @@
 package io.embrace.android.embracesdk.internal.api.delegate
 
-import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import io.embrace.android.embracesdk.LastRunEndState
 import io.embrace.android.embracesdk.fakes.FakeConfigService
-import io.embrace.android.embracesdk.fakes.FakeInternalLogger
-import io.embrace.android.embracesdk.fakes.FakeLogService
 import io.embrace.android.embracesdk.fakes.FakeSessionIdsProvider
-import io.embrace.android.embracesdk.fakes.OtelSdkMode
 import io.embrace.android.embracesdk.fakes.TestUuidSource
-import io.embrace.android.embracesdk.fakes.injection.FakeEssentialServiceModule
-import io.embrace.android.embracesdk.fakes.injection.FakeInitModule
-import io.embrace.android.embracesdk.fakes.injection.FakeLogModule
-import io.embrace.android.embracesdk.fakes.injection.FakeUserSessionOrchestrationModule
-import io.embrace.android.embracesdk.internal.injection.ModuleInitBootstrapper
+import io.embrace.android.embracesdk.internal.instrumentation.crash.LastRunCrashVerifier
+import io.mockk.mockk
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -24,37 +16,18 @@ import org.junit.runner.RunWith
 internal class SdkStateApiDelegateTest {
 
     private lateinit var delegate: SdkStateApiDelegate
-    private lateinit var logService: FakeLogService
     private lateinit var configService: FakeConfigService
     private lateinit var sessionIdsProvider: FakeSessionIdsProvider
-    private lateinit var sdkCallChecker: SdkCallChecker
-    private lateinit var logger: FakeInternalLogger
 
     @Before
     fun setUp() {
-        logService = FakeLogService()
         configService = FakeConfigService(deviceId = TestUuidSource().createUuid())
         sessionIdsProvider = FakeSessionIdsProvider()
-        val moduleInitBootstrapper = ModuleInitBootstrapper(
-            FakeInitModule(otelSdkMode = OtelSdkMode.COMPAT),
-            configServiceSupplier = { _, _, _, _, _ ->
-                configService
-            },
-            essentialServiceModuleSupplier = { _, _, _, _, _, _, _, _, _ ->
-                FakeEssentialServiceModule()
-            },
-            logModuleSupplier = { _, _, _, _, _, _, _ ->
-                FakeLogModule(logService = logService)
-            },
-            userSessionOrchestrationModuleSupplier = { _, _, _, _, _, _, _, _, _, _, _, _ ->
-                FakeUserSessionOrchestrationModule(sessionIdsProvider = sessionIdsProvider)
-            },
+        delegate = SdkStateApiDelegate(
+            deviceIdentifier = lazy { configService.deviceId },
+            sessionIdsProvider = sessionIdsProvider,
+            crashVerifier = LastRunCrashVerifier(mockk(relaxed = true)),
         )
-        moduleInitBootstrapper.init(ApplicationProvider.getApplicationContext())
-        logger = FakeInternalLogger()
-        sdkCallChecker = SdkCallChecker(logger)
-        sdkCallChecker.started.set(true)
-        delegate = SdkStateApiDelegate(moduleInitBootstrapper, sdkCallChecker)
     }
 
     @Test
@@ -69,22 +42,8 @@ internal class SdkStateApiDelegateTest {
     }
 
     @Test
-    fun `device ID not returned SDK is not enabled`() {
-        logger.throwOnInternalError = false
-        configService.deviceId = "foo"
-        sdkCallChecker.started.set(false)
-        assertEquals("", delegate.deviceId)
-    }
-
-    @Test
     fun getCurrentSessionId() {
         sessionIdsProvider.userSessionId = "test"
         assertEquals("test", delegate.currentUserSessionId)
-    }
-
-    @Test
-    fun `last end state is invalid if SDK not enabled`() {
-        sdkCallChecker.started.set(false)
-        assertEquals(LastRunEndState.INVALID, delegate.lastRunEndState)
     }
 }

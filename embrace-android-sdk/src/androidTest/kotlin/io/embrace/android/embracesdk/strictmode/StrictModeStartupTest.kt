@@ -6,14 +6,16 @@ import androidx.annotation.RequiresApi
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.filters.SdkSuppress
 import androidx.test.platform.app.InstrumentationRegistry
-import io.embrace.android.embracesdk.EmbraceImpl
 import io.embrace.android.embracesdk.fakes.OtelSdkMode
 import io.embrace.android.embracesdk.fakes.config.FakeBaseUrlConfig
 import io.embrace.android.embracesdk.fakes.config.FakeEnabledFeatureConfig
 import io.embrace.android.embracesdk.fakes.config.FakeInstrumentedConfig
+import io.embrace.android.embracesdk.internal.injection.BootstrapServices
 import io.embrace.android.embracesdk.internal.injection.InitModule
 import io.embrace.android.embracesdk.internal.injection.InitModuleImpl
-import io.embrace.android.embracesdk.internal.injection.ModuleInitBootstrapper
+import io.embrace.android.embracesdk.internal.injection.InitializedModuleGraph
+import io.embrace.android.embracesdk.internal.instance.SdkStateHolder
+import io.embrace.android.embracesdk.internal.instance.createSdkStateHolder
 import io.embrace.android.embracesdk.internal.worker.Worker
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -51,8 +53,8 @@ internal class StrictModeStartupTest(
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val context = ApplicationProvider.getApplicationContext<Context>()
     private val recorder = StrictModeRecorder()
-    private lateinit var bootstrapper: ModuleInitBootstrapper
-    private lateinit var embrace: EmbraceImpl
+    private var moduleGraph: InitializedModuleGraph? = null
+    private lateinit var sdkStateHolder: SdkStateHolder
 
     @Before
     fun setUp() {
@@ -61,9 +63,7 @@ internal class StrictModeStartupTest(
 
     @After
     fun tearDown() {
-        if (::embrace.isInitialized) {
-            embrace.stop()
-        }
+        sdkStateHolder.close()
     }
 
     @Test
@@ -71,16 +71,24 @@ internal class StrictModeStartupTest(
         instrumentation.runOnMainSync {
             recorder.install()
 
-            bootstrapper = ModuleInitBootstrapper(TestInitModule(InitModuleImpl(), otelSdkMode))
-            EmbraceImpl(bootstrapper).let {
-                embrace = it
-                it.start(context)
-            }
+            sdkStateHolder = createSdkStateHolder(
+                bootstrapServices = BootstrapServices(),
+                moduleGraphSupplier = { ctx, bootstrapServices, buffer ->
+                    InitializedModuleGraph(
+                        context = ctx,
+                        bootstrapServices = bootstrapServices,
+                        buffer = buffer,
+                        initModuleSupplier = { TestInitModule(InitModuleImpl(it), otelSdkMode) },
+                    )
+                },
+                onModuleGraphCreated = { moduleGraph = it },
+            )
+            sdkStateHolder.api.start(context)
         }
 
         drainInitWork()
-        assertTrue("SDK did not start.", embrace.isStarted)
-        assertEquals(otelSdkMode.useKotlinSdk, bootstrapper.openTelemetryModule.otelSdkWrapper.useKotlinSdk)
+        assertTrue("SDK did not start.", sdkStateHolder.api.isStarted)
+        assertEquals(otelSdkMode.useKotlinSdk, checkNotNull(moduleGraph).openTelemetryModule.otelSdkWrapper.useKotlinSdk)
         assertNoUnexpectedViolations(recorder.violations())
     }
 
@@ -92,7 +100,7 @@ internal class StrictModeStartupTest(
         repeat(2) {
             BACKGROUND_WORKERS.forEach { worker ->
                 runCatching {
-                    bootstrapper.workerThreadModule.backgroundWorker(worker).submit {}.get(DRAIN_TIMEOUT_MS, MILLISECONDS)
+                    checkNotNull(moduleGraph).workerThreadModule.backgroundWorker(worker).submit {}.get(DRAIN_TIMEOUT_MS, MILLISECONDS)
                 }
             }
             instrumentation.waitForIdleSync()

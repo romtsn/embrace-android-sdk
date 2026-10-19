@@ -176,8 +176,8 @@ internal class OpenTelemetrySdkTest(
         )
         spanExporter = FakeSpanExporter()
         logExporter = FakeLogRecordExporter()
-        configuration.addSpanExporter(spanExporter)
-        configuration.addLogExporter(logExporter)
+        configuration.externalConfig.addSpanExporter(spanExporter)
+        configuration.externalConfig.addLogExporter(logExporter)
 
         return configuration
     }
@@ -187,7 +187,7 @@ internal class OpenTelemetrySdkTest(
         return OtelSdkWrapper(
             otelClock = FakeOtelKotlinClock(FakeClock()),
             configuration = configuration,
-            spanService = FakeSpanService(),
+            spanServiceProvider = ::FakeSpanService,
             errorHandler = FakeInternalLogger(),
             useKotlinSdk = otelSdkMode.useKotlinSdk,
         )

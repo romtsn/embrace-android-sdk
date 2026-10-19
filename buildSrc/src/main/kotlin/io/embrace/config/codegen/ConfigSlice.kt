@@ -1,5 +1,6 @@
 package io.embrace.config.codegen
 
+import com.squareup.kotlinpoet.ClassName
 import com.squareup.kotlinpoet.ParameterSpec
 import org.yaml.snakeyaml.LoaderOptions
 import org.yaml.snakeyaml.Yaml
@@ -17,10 +18,17 @@ import org.yaml.snakeyaml.error.YAMLException
  *     default: false
  *     local:
  *       type: Boolean                 # Boolean, Int, Long or String
- *       sdk: enabledFeatures.isFooEnabled()   # read from InstrumentedConfig
+ *       json: sdk_config.foo_enabled  # path in embrace-config.json, instrumented into FooLocalConfigImpl
  *     remote:
  *       type: Pct                     # rollout percentage, resolved to a Boolean
  *       sdk: pctFooEnabled            # read from RemoteConfig
+ *   foo_limit:
+ *     property: fooLimit
+ *     default: 10
+ *     remote:
+ *       type: Int
+ *       sdk: fooConfig?.limit         # nested one level down in RemoteConfig
+ *       parent_type: FooRemoteConfig  # the type of RemoteConfig.fooConfig
  * ```
  *
  * Int and Long features may set `min` and `max` together, and String features `max_length`.
@@ -32,14 +40,16 @@ class ConfigSlice(
 ) {
 
     val resolver: String = "resolve" + name.removeSuffix("Config")
-
     val property: String = name.removeSuffix("Config").replaceFirstChar(Char::lowercaseChar)
+    val localConfig: ClassName = ConfigClassNames.INSTRUMENTED_CONFIG.peerClass(name.removeSuffix("Config") + "LocalConfig")
+    val localConfigImpl: ClassName = ConfigClassNames.INSTRUMENTED_CONFIG_IMPL.peerClass(localConfig.simpleName + "Impl")
+    val localFields: List<ConfigField> = fields.filter { it.local != null }
 
     val doc: String =
         "Resolved " + name.removeSuffix("Config").split(Regex("(?=[A-Z])")).joinToString(" ") { it.lowercase() }.trim() + " config."
 
     val resolverParams: List<ParameterSpec> = listOfNotNull(
-        ParameterSpec("local", ConfigClassNames.INSTRUMENTED_CONFIG).takeIf { fields.any { it.local != null } },
+        ParameterSpec("local", localConfig).takeIf { localFields.isNotEmpty() },
         ParameterSpec("remote", ConfigClassNames.REMOTE_CONFIG.copy(nullable = true)).takeIf { fields.any { it.remote != null } },
         ParameterSpec("bucket", ConfigClassNames.LAZY_FLOAT).takeIf { fields.any { it.remote?.type == ConfigType.PCT } },
     )
@@ -65,7 +75,7 @@ class ConfigSlice(
 
         private fun parseFeature(feature: Map<String, Any>): ConfigField {
             feature.checkKeys("property", "default", "local?", "remote?", "min?", "max?", "max_length?")
-            val local = feature["local"]?.let { within("local") { parseProperty(it.asMap()) } }
+            val local = feature["local"]?.let { within("local") { parseLocalProperty(it.asMap()) } }
             val remote = feature["remote"]?.let { within("remote") { parseProperty(it.asMap()) } }
             val type = local?.type ?: remote?.type?.resolvedType ?: throw IllegalArgumentException("needs a local or remote section")
             require(local?.type != ConfigType.PCT) { "Pct is only valid for remote" }
@@ -103,8 +113,25 @@ class ConfigSlice(
                 ?: throw IllegalArgumentException("'$key' is not a valid ${type.yamlName}")
 
         private fun parseProperty(yaml: Map<String, Any>): ConfigProperty {
-            yaml.checkKeys("type", "sdk")
-            return ConfigProperty(ConfigType.fromYaml(yaml.string("type")), yaml.string("sdk"))
+            yaml.checkKeys("type", "sdk", "parent_type?")
+            val sdk = yaml.string("sdk")
+            val nested = sdk.matches(Regex("\\w+\\?\\.\\w+"))
+            require(nested || sdk.matches(Regex("\\w+"))) { "'$sdk' is not a valid RemoteConfig path" }
+            val parentType = yaml["parent_type"]?.let {
+                require(nested) { "parent_type is only valid for nested properties" }
+                val name = yaml.string("parent_type")
+                require(name.matches(Regex("[A-Z]\\w*"))) { "'$name' is not a valid class name" }
+                ConfigClassNames.REMOTE_CONFIG.peerClass(name)
+            }
+            require(!nested || parentType != null) { "nested properties need a parent_type" }
+            return ConfigProperty(ConfigType.fromYaml(yaml.string("type")), sdk, parentType)
+        }
+
+        private fun parseLocalProperty(yaml: Map<String, Any>): LocalConfigProperty {
+            yaml.checkKeys("type", "json")
+            val json = yaml.string("json")
+            require(json.matches(Regex("[a-z0-9_]+(\\.[a-z0-9_]+)*"))) { "'$json' is not a valid json path" }
+            return LocalConfigProperty(ConfigType.fromYaml(yaml.string("type")), json)
         }
 
         private fun Map<String, Any>.checkKeys(vararg keys: String) {

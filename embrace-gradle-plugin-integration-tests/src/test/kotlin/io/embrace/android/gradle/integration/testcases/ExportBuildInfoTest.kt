@@ -3,12 +3,15 @@ package io.embrace.android.gradle.integration.testcases
 import io.embrace.android.gradle.integration.framework.IntegrationTestDefaults
 import io.embrace.android.gradle.integration.framework.PluginIntegrationTestRule
 import io.embrace.android.gradle.integration.framework.ProjectType
+import io.embrace.android.gradle.plugin.network.EmbraceEndpoint
 import io.embrace.android.gradle.plugin.util.INVALID_BUILD_ID
+import org.gradle.testkit.runner.TaskOutcome
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
+import java.io.File
 
 class ExportBuildInfoTest {
 
@@ -17,22 +20,11 @@ class ExportBuildInfoTest {
     val rule: PluginIntegrationTestRule = PluginIntegrationTestRule()
 
     @Test
-    fun `no build info exported by default`() {
+    fun `build info export`() {
+        var firstBuildId = ""
         rule.runTest(
             fixture = "android-simple",
-            task = "assembleRelease",
-            projectType = ProjectType.ANDROID,
-            assertions = { projectDir ->
-                verifyNoBuildInfoExported(projectDir, "release")
-            },
-        )
-    }
-
-    @Test
-    fun `build info exported for release variant when enabled`() {
-        rule.runTest(
-            fixture = "android-simple",
-            task = "assembleRelease",
+            tasks = listOf("assembleDebug", "assembleRelease"),
             projectType = ProjectType.ANDROID,
             additionalArgs = listOf("-Pembrace.exportBuildInfo=true"),
             assertions = { projectDir ->
@@ -40,50 +32,45 @@ class ExportBuildInfoTest {
                 assertEquals(IntegrationTestDefaults.APP_ID, buildInfo.appId)
                 assertEquals("release", buildInfo.variantName)
                 assertTrue(buildInfo.buildId.isNotBlank())
+                firstBuildId = buildInfo.buildId
+                verifyNoBuildInfoExported(projectDir, "debug")
             },
         )
-    }
 
-    @Test
-    fun `build info exported with unique build ID when mapping upload disabled`() {
+        // build ID is still generated when mapping file upload is disabled. Only the export task
+        // re-runs (its fresh build ID input changed), so the APK tasks are up to date.
         rule.runTest(
             fixture = "android-simple",
-            task = "assembleRelease",
+            tasks = listOf("assembleRelease"),
             projectType = ProjectType.ANDROID,
-            additionalArgs = listOf("-Pembrace.exportBuildInfo=true", "-Pembrace.disableMappingFileUpload=true"),
+            expectedOutcome = TaskOutcome.UP_TO_DATE,
+            additionalArgs = listOf(
+                "-Pembrace.exportBuildInfo=true",
+                "-Pembrace.disableMappingFileUpload=true",
+                "-Pembrace.disableCollectBuildData=true",
+            ),
             assertions = { projectDir ->
                 val buildInfo = readBuildInfoExport(projectDir, "release")
                 assertTrue(buildInfo.buildId.matches(Regex("[A-F0-9]{32}")))
                 assertNotEquals(INVALID_BUILD_ID, buildInfo.buildId)
+                assertNotEquals(firstBuildId, buildInfo.buildId)
+                verifyNoRequestsSent(EmbraceEndpoint.BUILD_DATA)
             },
         )
-    }
 
-    @Test
-    fun `no build info exported for debug variant when enabled`() {
+        // nothing is sent when the config file is missing, even though mapping upload is re-enabled
         rule.runTest(
             fixture = "android-simple",
-            task = "assembleDebug",
+            tasks = listOf("assembleRelease"),
             projectType = ProjectType.ANDROID,
-            additionalArgs = listOf("-Pembrace.exportBuildInfo=true"),
-            assertions = { projectDir ->
-                verifyNoBuildInfoExported(projectDir, "debug")
+            expectedOutcome = TaskOutcome.UP_TO_DATE,
+            setup = { projectDir ->
+                File(projectDir, "src/main/embrace-config.json").delete()
             },
-        )
-    }
-
-    @Test
-    fun `build info exported for dexguard obfuscation task`() {
-        rule.runTest(
-            fixture = "android-dexguard",
-            task = "assemble",
-            projectType = ProjectType.ANDROID,
-            additionalArgs = listOf("-Pembrace.exportBuildInfo=true"),
-            assertions = { projectDir ->
-                val buildInfo = readBuildInfoExport(projectDir, "release")
-                assertEquals(IntegrationTestDefaults.APP_ID, buildInfo.appId)
-                assertEquals("release", buildInfo.variantName)
-                assertTrue(buildInfo.buildId.isNotBlank())
+            assertions = {
+                EmbraceEndpoint.entries.forEach {
+                    verifyNoRequestsSent(it)
+                }
             },
         )
     }

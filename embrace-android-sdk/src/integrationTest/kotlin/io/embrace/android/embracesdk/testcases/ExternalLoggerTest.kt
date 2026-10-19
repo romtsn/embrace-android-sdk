@@ -33,6 +33,7 @@ import io.opentelemetry.kotlin.semconv.LogAttributes
 import io.opentelemetry.kotlin.semconv.ServiceAttributes
 import io.opentelemetry.kotlin.semconv.UserAttributes
 import io.opentelemetry.kotlin.tracing.SpanContext
+import io.opentelemetry.kotlin.tracing.createInvalidSpanContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -124,7 +125,7 @@ internal class ExternalLoggerTest(
                         expectedBody = "test",
                         expectedObservedTimestamp = observedTime,
                         expectedTimestamp = logTime,
-                        expectedSpanContext = embOpenTelemetry.spanContext.invalid,
+                        expectedSpanContext = createInvalidSpanContext(),
                         expectedSeverityNumber = SeverityNumber.FATAL,
                         expectedSeverityText = "DANG",
                         expectedUserSessionId = userSessionId,
@@ -169,7 +170,7 @@ internal class ExternalLoggerTest(
                 clock.tick()
                 logTime = clock.now().millisToNanos()
                 embrace.addUserSessionProperty("bg-attr", "blah", PropertyScope.PERMANENT)
-                val sessionIds = testRule.bootstrapper.userSessionOrchestrationModule.sessionIdsProvider.getActiveSessionIds()
+                val sessionIds = testRule.moduleGraph.userSessionOrchestrationModule.sessionIdsProvider.getActiveSessionIds()
                 userSessionId = sessionIds.userSessionId
                 sessionPartId = sessionIds.sessionPartId
                 val span = embOpenTelemetry.getTracer("").startSpan("my-span")

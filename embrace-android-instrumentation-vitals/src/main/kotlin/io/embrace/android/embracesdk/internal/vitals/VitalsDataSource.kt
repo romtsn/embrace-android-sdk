@@ -17,6 +17,8 @@ import io.embrace.android.embracesdk.internal.arch.schema.EmbType
 import io.embrace.android.embracesdk.internal.arch.schema.SchemaType
 import io.embrace.android.embracesdk.internal.arch.state.ProcessState
 import io.embrace.android.embracesdk.internal.arch.state.ProcessStateListener
+import io.embrace.android.embracesdk.internal.utils.BuildVersionChecker
+import io.embrace.android.embracesdk.internal.utils.VersionChecker
 import io.embrace.android.embracesdk.internal.vitals.screenload.ScreenLoadResult
 import io.embrace.android.embracesdk.internal.vitals.screenload.ScreenLoadTracker
 import io.embrace.android.embracesdk.internal.vitals.smoothness.FocalMomentTracker
@@ -33,6 +35,7 @@ import io.embrace.android.embracesdk.semconv.EmbFrameCountsAttributes
 @RequiresApi(Build.VERSION_CODES.N)
 internal class VitalsDataSource(
     private val args: InstrumentationArgs,
+    private val versionChecker: VersionChecker = BuildVersionChecker,
 ) : DataSourceImpl(
     args = args,
     // Vitals emits a span per gesture and per navigation, so it needs a ceiling: an unlimited source would
@@ -70,6 +73,7 @@ internal class VitalsDataSource(
     private val frameMetricsStrategy: FrameMetricsStrategy = FrameMetricsStrategy.create(
         refreshIntervalNanos = displayRefreshIntervalNanos(),
         jankHeuristicMultiplier = args.configService.config.vitals.jankHeuristicMultiplier,
+        versionChecker = versionChecker,
     )
 
     private val displayListener = object : DisplayManager.DisplayListener {
@@ -87,6 +91,12 @@ internal class VitalsDataSource(
     @Volatile
     private var focalTracker: FocalMomentTracker? = null
 
+    @Volatile
+    private var vitalsScheduler: HandlerVitalsScheduler? = null
+
+    @Volatile
+    private var activityListener: VitalsActivityListener? = null
+
     private val processStateListener = object : ProcessStateListener {
         override fun onBackground() {
             focalTracker?.onAppBackgrounded()
@@ -98,10 +108,11 @@ internal class VitalsDataSource(
     override fun onDataCaptureEnabled() {
         startSessionPart()
         val vitalsScheduler = HandlerVitalsScheduler().apply { start() }
+        this.vitalsScheduler = vitalsScheduler
         val handler = vitalsScheduler.handler
 
         // Below API 31 the budget comes from [refreshRate]; track refresh-rate changes to keep it live.
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+        if (!versionChecker.isAtLeast(Build.VERSION_CODES.S)) {
             args.systemService<DisplayManager>(Context.DISPLAY_SERVICE)
                 ?.registerDisplayListener(displayListener, handler)
         }
@@ -137,9 +148,24 @@ internal class VitalsDataSource(
             frameMetricsHandler = handler,
             frameMetricsStrategy = frameMetricsStrategy,
         )
+        activityListener = listener
         args.application.registerActivityLifecycleCallbacks(listener)
         args.processStateTracker.addListener(processStateListener)
         args.navigationTrackingService.addScreenAttributesSource(screenAttributesSource)
+    }
+
+    override fun onDataCaptureDisabled() {
+        activityListener?.let { listener ->
+            args.application.unregisterActivityLifecycleCallbacks(listener)
+            listener.close()
+        }
+        activityListener = null
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            args.systemService<DisplayManager>(Context.DISPLAY_SERVICE)?.unregisterDisplayListener(displayListener)
+        }
+        vitalsScheduler?.stop()
+        vitalsScheduler = null
+        focalTracker = null
     }
 
     override fun onPreSessionEnd() {

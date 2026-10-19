@@ -30,7 +30,7 @@ import io.embrace.android.embracesdk.internal.worker.BackgroundWorker
 import java.io.File
 
 /**
- * Writes session part telemetry to disk, if the multi-file persistence layer is enabled.
+ * Writes session part telemetry to disk, if multi-file persistence mode is enabled.
  * All filesystem work is queued on a single-threaded [worker]. A queued write that is superseded
  * before it runs is cancelled to avoid duplicate work.
  */
@@ -57,7 +57,12 @@ class SessionPartWriterImpl(
         private const val MAX_CARRIED_OVER_SPANS: Int = 1000
         private const val CARRIED_OVER_SPAN_LIMIT_TYPE: String = "carried_over_span"
 
-        const val METADATA_WRITE_DELAY_MS: Long = 2000
+        /**
+         * Shorter than the span write delays: user info and resource changes are rare, so a change is
+         * persisted sooner at little cost, while a burst of them still coalesces into one write of the
+         * metadata file, which also holds the native symbol map.
+         */
+        const val METADATA_WRITE_DELAY_MS: Long = 500
         const val SPAN_SNAPSHOT_WRITE_DELAY_MS: Long = 2000
         const val COMPLETED_SPAN_WRITE_DELAY_MS: Long = 2000
     }
@@ -339,7 +344,7 @@ class SessionPartWriterImpl(
         @Volatile
         var sealed: Boolean = false
 
-        private val target = SessionPartWriteTarget(sessionsDir) { directory }
+        private val target = SessionPartWriteTarget(sessionsDir, clock) { directory }
 
         /**
          * Whether nothing more should be written for this part: it has either been fully written,

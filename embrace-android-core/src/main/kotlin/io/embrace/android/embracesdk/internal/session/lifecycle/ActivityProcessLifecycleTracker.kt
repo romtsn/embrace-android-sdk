@@ -105,6 +105,14 @@ class ActivityProcessLifecycleTracker(
         }
     }
 
+    override fun close() {
+        listener = null
+        runCatching {
+            application.unregisterActivityLifecycleCallbacks(this)
+        }
+        runCatching { handler.removeCallbacks(backgroundRunnable) }
+    }
+
     override fun onActivityStarted(activity: Activity) {
         handler.removeCallbacks(backgroundRunnable)
 

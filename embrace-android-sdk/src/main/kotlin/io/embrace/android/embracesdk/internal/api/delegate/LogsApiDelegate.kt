@@ -8,10 +8,9 @@ import io.embrace.android.embracesdk.internal.arch.schema.SchemaType.Exception
 import io.embrace.android.embracesdk.internal.arch.schema.SchemaType.Log
 import io.embrace.android.embracesdk.internal.arch.schema.SendMode
 import io.embrace.android.embracesdk.internal.arch.schema.TelemetryAttributes
-import io.embrace.android.embracesdk.internal.injection.ModuleInitBootstrapper
-import io.embrace.android.embracesdk.internal.injection.embraceImplInject
 import io.embrace.android.embracesdk.internal.instrumentation.fcm.PushNotificationBreadcrumb
 import io.embrace.android.embracesdk.internal.instrumentation.fcm.fcmDataSource
+import io.embrace.android.embracesdk.internal.logging.InternalLogger
 import io.embrace.android.embracesdk.internal.logs.LogExceptionType
 import io.embrace.android.embracesdk.internal.logs.LogService
 import io.embrace.android.embracesdk.internal.logs.attachments.Attachment
@@ -19,35 +18,26 @@ import io.embrace.android.embracesdk.internal.logs.attachments.Attachment.Embrac
 import io.embrace.android.embracesdk.internal.logs.attachments.AttachmentErrorCode.ATTACHMENT_TOO_LARGE
 import io.embrace.android.embracesdk.internal.logs.attachments.AttachmentErrorCode.OVER_MAX_ATTACHMENTS
 import io.embrace.android.embracesdk.internal.logs.attachments.AttachmentErrorCode.UNKNOWN
+import io.embrace.android.embracesdk.internal.logs.attachments.AttachmentService
 import io.embrace.android.embracesdk.internal.payload.Envelope
+import io.embrace.android.embracesdk.internal.serialization.PlatformSerializer
 import io.embrace.android.embracesdk.internal.serialization.truncatedStacktrace
+import io.embrace.android.embracesdk.internal.session.orchestrator.PayloadStore
 import io.embrace.android.embracesdk.internal.telemetry.AppliedLimitType
+import io.embrace.android.embracesdk.internal.telemetry.InternalTelemetryService
 import io.embrace.android.embracesdk.internal.utils.getSafeStackTrace
 import io.embrace.android.embracesdk.semconv.EmbAndroidAttributes
 import io.embrace.android.embracesdk.semconv.EmbSessionAttributes
 import io.opentelemetry.kotlin.semconv.ExceptionAttributes
 
 internal class LogsApiDelegate(
-    bootstrapper: ModuleInitBootstrapper,
-    private val sdkCallChecker: SdkCallChecker,
+    private val logService: Lazy<LogService>,
+    private val attachmentService: AttachmentService,
+    private val logger: InternalLogger,
+    private val payloadStore: PayloadStore?,
+    private val serializer: PlatformSerializer,
+    private val telemetryService: InternalTelemetryService,
 ) : LogsApi {
-
-    private val logService by embraceImplInject(sdkCallChecker) { bootstrapper.logModule.logService }
-    private val attachmentService by embraceImplInject(sdkCallChecker) {
-        bootstrapper.logModule.attachmentService
-    }
-    private val logger by embraceImplInject(sdkCallChecker) {
-        bootstrapper.initModule.logger
-    }
-    private val payloadStore by embraceImplInject(sdkCallChecker) {
-        bootstrapper.deliveryModule?.payloadStore
-    }
-    private val serializer by embraceImplInject(sdkCallChecker) {
-        bootstrapper.initModule.jsonSerializer
-    }
-    private val telemetryService by embraceImplInject(sdkCallChecker) {
-        bootstrapper.initModule.telemetryService
-    }
 
     override fun logInfo(message: String) = logMessage(message, Severity.INFO)
     override fun logWarning(message: String) = logMessage(message, Severity.WARNING)
@@ -71,7 +61,7 @@ internal class LogsApiDelegate(
         properties: Map<String, Any>,
         attachment: ByteArray,
     ) {
-        val obj = attachmentService?.createAttachment(attachment) ?: return
+        val obj = attachmentService.createAttachment(attachment)
         logAttachmentErrorIfNeeded(obj)
         logMessageImpl(
             severity = severity,
@@ -88,7 +78,7 @@ internal class LogsApiDelegate(
         attachmentId: String,
         attachmentUrl: String,
     ) {
-        val obj = attachmentService?.createAttachment(attachmentId, attachmentUrl) ?: return
+        val obj = attachmentService.createAttachment(attachmentId, attachmentUrl)
         logAttachmentErrorIfNeeded(obj)
         logMessageImpl(
             severity = severity,
@@ -105,8 +95,8 @@ internal class LogsApiDelegate(
             UNKNOWN -> "An unknown error occurred while processing the attachment."
             else -> return
         }
-        telemetryService?.trackAppliedLimit("attachment", AppliedLimitType.DROP)
-        logger?.logError(msg, RuntimeException(msg))
+        telemetryService.trackAppliedLimit("attachment", AppliedLimitType.DROP)
+        logger.logError(msg, RuntimeException(msg))
     }
 
     override fun logException(
@@ -155,11 +145,9 @@ internal class LogsApiDelegate(
         exceptionData: ExceptionData? = null,
         attachment: Attachment? = null,
     ) {
-        if (sdkCallChecker.check("log_message")) {
-            runCatching {
-                val dst = logService ?: return
-                sendLog(attributes, exceptionData, attachment, severity, dst, message)
-            }
+        runCatching {
+            val dst = logService.value
+            sendLog(attributes, exceptionData, attachment, severity, dst, message)
         }
     }
 
@@ -237,7 +225,7 @@ internal class LogsApiDelegate(
     }
 
     private fun serializeStacktrace(elements: Array<StackTraceElement>): String? = runCatching {
-        serializer?.truncatedStacktrace(elements)
+        serializer.truncatedStacktrace(elements)
     }.getOrNull()
 
     @Deprecated("This API is deprecated and will be removed in a future release.Use logMessage() instead.")
@@ -251,12 +239,10 @@ internal class LogsApiDelegate(
         isNotification: Boolean?,
         hasData: Boolean?,
     ) {
-        if (sdkCallChecker.check("log_push_notification")) {
-            if (hasData == null || isNotification == null || messageDeliveredPriority == null) {
-                return
-            }
-            val type = PushNotificationBreadcrumb.NotificationType.notificationTypeFor(hasData, isNotification)
-            fcmDataSource?.logPushNotification(title, body, topic, id, notificationPriority, type)
+        if (hasData == null || isNotification == null || messageDeliveredPriority == null) {
+            return
         }
+        val type = PushNotificationBreadcrumb.NotificationType.notificationTypeFor(hasData, isNotification)
+        fcmDataSource?.logPushNotification(title, body, topic, id, notificationPriority, type)
     }
 }

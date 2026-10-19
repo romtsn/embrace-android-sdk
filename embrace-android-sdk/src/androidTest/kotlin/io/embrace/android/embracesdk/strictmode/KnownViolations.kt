@@ -22,7 +22,7 @@ internal data class KnownViolation(
 @RequiresApi(Build.VERSION_CODES.P)
 internal val KNOWN_VIOLATIONS: List<KnownViolation> = listOf(
     KnownViolation(
-        signature = "internal.injection.ModuleInitBootstrapper.init",
+        signature = "internal.injection.InitializedModuleGraph.<init>",
         violation = DiskReadViolation::class,
         reason = "context.filesDir is passed to PersistedConfig as a ctor arg, and ContextImpl.getFilesDir " +
             "stats the directory on every call",
@@ -51,11 +51,11 @@ internal val KNOWN_VIOLATIONS: List<KnownViolation> = listOf(
         signature = "internal.prefs.SharedPrefsStore.getString",
         violation = DiskReadViolation::class,
         reason = "A binary cache miss makes DeviceIdProvider read the device ID out of SharedPreferences. " +
-            "Only fires when it beats ModuleInitBootstrapper.prewarmSharedPreferences and has to block in " +
+            "Only fires when it beats InitializedModuleGraph.prewarmSharedPreferences and has to block in " +
             "awaitLoadedLocked",
     ),
     KnownViolation(
-        signature = "internal.injection.SdkInitActionsKt.loadInstrumentationProviders",
+        signature = "internal.instance.RealSdkInstance.loadInstrumentationProviders",
         violation = DiskReadViolation::class,
         reason = "ServiceLoader reads META-INF/services out of the APK. R8 rewrites this away in release builds",
     ),

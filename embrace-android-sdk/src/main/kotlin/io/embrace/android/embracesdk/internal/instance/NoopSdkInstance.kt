@@ -10,6 +10,8 @@ import io.embrace.android.embracesdk.Severity
 import io.embrace.android.embracesdk.UserSessionListener
 import io.embrace.android.embracesdk.experiments.TrackedExperiment
 import io.embrace.android.embracesdk.experiments.TrackedFeatureFlag
+import io.embrace.android.embracesdk.internal.InternalInterfaceApi
+import io.embrace.android.embracesdk.internal.NoopInternalInterfaceApi
 import io.embrace.android.embracesdk.internal.api.SdkApi
 import io.embrace.android.embracesdk.internal.api.delegate.TrackedExperimentImpl
 import io.embrace.android.embracesdk.internal.api.delegate.TrackedFeatureFlagImpl
@@ -31,15 +33,18 @@ import io.opentelemetry.kotlin.tracing.export.SpanProcessor
 /**
  * A no-op implementation of [SdkApi]. The first API call that gets dropped logs [message] along
  * with the name of the action that could not be performed.
+ *
+ * When handed a [BufferingSdkInstance] it discards the buffered calls so their memory is released.
  */
 internal class NoopSdkInstance(
     private val logger: InternalLogger,
     private val message: String,
-) : SdkApi {
+) : SdkInstance, InternalInterfaceApi by NoopInternalInterfaceApi {
 
     companion object {
         const val SDK_NOT_INITIALIZED: String = "Embrace SDK is not initialized yet"
         const val SDK_DISABLED: String = "Embrace SDK is disabled"
+        const val SDK_START_FAILED: String = "Embrace SDK failed to start"
     }
 
     @Volatile
@@ -48,9 +53,21 @@ internal class NoopSdkInstance(
     private fun logDropped(action: String) {
         if (!logged) {
             logged = true
-            val msg = "$message, cannot $action. Subsequent dropped calls will not be logged."
-            logger.logInfo(msg, Throwable(msg))
+            if (message == SDK_NOT_INITIALIZED) {
+                val msg = "$message, cannot $action."
+                logger.logWarning(msg, Throwable(msg))
+            } else {
+                val msg = "$message, cannot $action. Subsequent dropped calls will not be logged."
+                logger.logInfo(msg, Throwable(msg))
+            }
         }
+    }
+
+    override fun onPostStart(buffer: BufferingSdkInstance) {
+        buffer.drainCompletedSpans(this)
+        buffer.drainExperimentCalls(this) {}
+        buffer.drainOTelConfig(this)
+        buffer.discardInternalErrors()
     }
 
     override fun start(context: Context) {}
@@ -86,7 +103,7 @@ internal class NoopSdkInstance(
     }
 
     override fun logException(throwable: Throwable, severity: Severity, properties: Map<String, Any>, message: String?) {
-        logDropped("log_exception")
+        logDropped("log_message")
     }
 
     override fun logCustomStacktrace(
@@ -95,7 +112,7 @@ internal class NoopSdkInstance(
         properties: Map<String, Any>,
         message: String?,
     ) {
-        logDropped("log_custom_stacktrace")
+        logDropped("log_message")
     }
 
     @Deprecated("This API is deprecated and will be removed in a future release.Use logMessage() instead.")
@@ -128,17 +145,17 @@ internal class NoopSdkInstance(
     override fun generateW3cTraceparent(): String? = null
 
     override fun addUserSessionProperty(key: String, value: String, scope: PropertyScope): Boolean {
-        logDropped("add_user_session_property")
+        logDropped("add_session_property")
         return false
     }
 
     override fun removeUserSessionProperty(key: String): Boolean {
-        logDropped("remove_user_session_property")
+        logDropped("remove_session_property")
         return false
     }
 
     override fun endUserSession() {
-        logDropped("end_user_session")
+        logDropped("end_session")
     }
 
     override fun addUserSessionListener(listener: UserSessionListener) {
@@ -176,7 +193,7 @@ internal class NoopSdkInstance(
     }
 
     override fun clearAllUserPersonas() {
-        logDropped("clear_all_user_personas")
+        logDropped("clear_user_personas")
     }
 
     @Deprecated("Use discouraged. Personal identifying information shouldn't be stored in telemetry.")
@@ -246,13 +263,19 @@ internal class NoopSdkInstance(
 
     override fun disable() {}
 
+    override fun close() {}
+
     override fun applicationInitStart() {}
 
     override fun applicationInitEnd() {}
 
     override val isStarted: Boolean = false
 
-    override val deviceId: String = ""
+    override val deviceId: String
+        get() {
+            logDropped("get_device_id")
+            return ""
+        }
 
     override val currentUserSessionId: String? = null
 
@@ -336,21 +359,21 @@ internal class NoopSdkInstance(
         TrackedExperimentImpl(id, variant, startedAt)
 
     override fun trackExperiments(experiments: List<TrackedExperiment>) {
-        logDropped("track_experiments")
+        logDropped("track_experiment")
     }
 
     override fun untrackExperiments(ids: List<String>, endedAt: Long?) {
-        logDropped("untrack_experiments")
+        logDropped("untrack_experiment")
     }
 
     override fun createFeatureFlag(id: String, variant: String?, startedAt: Long?): TrackedFeatureFlag =
         TrackedFeatureFlagImpl(id, variant, startedAt)
 
     override fun trackFeatureFlags(flags: List<TrackedFeatureFlag>) {
-        logDropped("track_feature_flags")
+        logDropped("track_feature_flag")
     }
 
     override fun untrackFeatureFlags(ids: List<String>, endedAt: Long?) {
-        logDropped("untrack_feature_flags")
+        logDropped("untrack_feature_flag")
     }
 }

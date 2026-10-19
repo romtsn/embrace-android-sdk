@@ -1,8 +1,6 @@
 package io.embrace.android.embracesdk.internal.instrumentation.crash.jvm
 
 import android.app.Application
-import androidx.test.core.app.ApplicationProvider
-import androidx.test.ext.junit.runners.AndroidJUnit4
 import io.embrace.android.embracesdk.fakes.FakeConfigService
 import io.embrace.android.embracesdk.fakes.FakeInstrumentationArgs
 import io.embrace.android.embracesdk.fakes.FakeInternalLogger
@@ -15,9 +13,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
 import org.junit.Before
 import org.junit.Test
-import org.junit.runner.RunWith
 
-@RunWith(AndroidJUnit4::class)
 internal class JvmCrashDataSourceImplTest {
 
     private lateinit var crashDataSource: JvmCrashDataSourceImpl
@@ -29,7 +25,7 @@ internal class JvmCrashDataSourceImplTest {
 
     @Before
     fun setUp() {
-        ctx = ApplicationProvider.getApplicationContext()
+        ctx = Application()
         args = FakeInstrumentationArgs(ctx)
         logger = FakeInternalLogger()
         testException = RuntimeException("Test exception")
@@ -57,6 +53,33 @@ internal class JvmCrashDataSourceImplTest {
         crashDataSource.addCrashTeardownHandler { observedOrder.add(3) }
         crashDataSource.logUnhandledJvmThrowable(testException)
         assertEquals(listOf(1, 2, 3), observedOrder)
+    }
+
+    @Test
+    fun `crash after data capture disabled is neither captured nor torn down`() {
+        setupForHandleCrash(true)
+        val observedOrder = mutableListOf<Int>()
+        crashDataSource.addCrashTeardownHandler { observedOrder.add(1) }
+        crashDataSource.onDataCaptureDisabled()
+
+        crashDataSource.logUnhandledJvmThrowable(testException)
+        assertEquals(0, args.destination.logEvents.size)
+        assertEquals(emptyList<Int>(), observedOrder)
+    }
+
+    @Test
+    fun `disabling data capture detaches the handler but still delegates to the previous one`() {
+        val previous = EmbraceUncaughtExceptionHandlerTest.TestUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler(previous)
+        setupForHandleCrash(true)
+        val handler = Thread.getDefaultUncaughtExceptionHandler() as EmbraceUncaughtExceptionHandler
+        crashDataSource.onDataCaptureDisabled()
+
+        // left installed so that handlers which wrap it are not clobbered
+        assertSame(handler, Thread.getDefaultUncaughtExceptionHandler())
+        handler.uncaughtException(Thread.currentThread(), testException)
+        assertEquals(0, args.destination.logEvents.size)
+        assertSame(testException, previous.throwable)
     }
 
     @Test

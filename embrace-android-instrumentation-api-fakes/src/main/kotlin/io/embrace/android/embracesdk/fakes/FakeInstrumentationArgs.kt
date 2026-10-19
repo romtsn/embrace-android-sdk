@@ -13,13 +13,14 @@ import io.embrace.android.embracesdk.internal.session.id.SessionIdsSnapshot
 import io.embrace.android.embracesdk.internal.store.OrdinalStore
 import io.embrace.android.embracesdk.internal.telemetry.InternalTelemetryService
 import io.embrace.android.embracesdk.internal.utils.UuidSource
+import io.embrace.android.embracesdk.internal.utils.event.EventBus
 import io.embrace.android.embracesdk.internal.worker.BackgroundWorker
 import io.embrace.android.embracesdk.internal.worker.PriorityWorker
 import io.embrace.android.embracesdk.internal.worker.Worker
 import java.io.File
 
 class FakeInstrumentationArgs(
-    override val application: Application,
+    override val application: Application = Application(),
     override val configService: FakeConfigService = FakeConfigService(),
     override val context: Context = application,
     override val destination: FakeTelemetryDestination = FakeTelemetryDestination(),
@@ -41,6 +42,7 @@ class FakeInstrumentationArgs(
     val sessionChangeListeners: MutableList<SessionPartChangeListener> = mutableListOf(),
     val sessionEndListeners: MutableList<SessionPartEndListener> = mutableListOf(),
     val systemServiceSupplier: (name: String) -> Any? = { null },
+    override val eventBus: EventBus = EventBus(logger),
 ) : InstrumentationArgs {
 
     override fun backgroundWorker(worker: Worker.Background): BackgroundWorker = backgroundWorkerSupplier(worker)

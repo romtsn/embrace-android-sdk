@@ -17,6 +17,10 @@ android {
         jniLibs.pickFirsts.add("**/*.so")
     }
     defaultConfig.consumerProguardFiles("embrace-proguard.cfg")
+    providers.gradleProperty("embrace.abiFilters").orNull?.let {
+        //noinspection ChromeOsAbiSupport only set on CI to match the emulator ABI
+        defaultConfig.ndk.abiFilters += it.split(",")
+    }
 }
 
 dependencies {
@@ -26,7 +30,6 @@ dependencies {
 
     testImplementation(project(":embrace-android-instrumentation-api-fakes"))
     testImplementation(project(":embrace-test-fakes")) // TODO: remove this dependency after full modularisation
-    testImplementation(libs.robolectric)
 
     androidTestImplementation(libs.androidx.test.core)
     androidTestImplementation(libs.androidx.test.runner)

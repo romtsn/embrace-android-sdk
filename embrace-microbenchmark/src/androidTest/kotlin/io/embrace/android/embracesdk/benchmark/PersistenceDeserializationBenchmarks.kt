@@ -17,7 +17,7 @@ import java.io.ByteArrayInputStream
 import java.util.zip.GZIPInputStream
 
 /**
- * Measures what each persistence layer costs to turn the bytes it stored back into one session,
+ * Measures what each persistence mode costs to turn the bytes it stored back into one session,
  * without I/O. The counterpart to [PersistenceSerializationBenchmarks], over the same session.
  *
  * [deserializeSessionSingleFile] measures **gunzip** and JSON decoding.
@@ -55,7 +55,7 @@ class PersistenceDeserializationBenchmarks(
     fun deserializeSessionMultiFile() {
         benchmarkRule.measureRepeated {
             val stored = runWithMeasurementDisabled { fixture.newPartSource() }
-            val envelope = decoder.decode(stored)
+            val envelope = decoder.decode(stored)?.envelope
             runWithMeasurementDisabled { checkSpanCount(checkNotNull(envelope) { "session part did not decode" }) }
         }
     }

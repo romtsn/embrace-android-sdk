@@ -1,19 +1,15 @@
 package io.embrace.android.embracesdk.internal.api.delegate
 
-import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import io.embrace.android.embracesdk.fakes.FakeClock
-import io.embrace.android.embracesdk.fakes.FakeConfigService
 import io.embrace.android.embracesdk.fakes.FakeExperimentTrackingService
 import io.embrace.android.embracesdk.fakes.FakeInternalLogger
 import io.embrace.android.embracesdk.fakes.OtelSdkMode
-import io.embrace.android.embracesdk.fakes.injection.FakeEssentialServiceModule
 import io.embrace.android.embracesdk.fakes.injection.FakeInitModule
 import io.embrace.android.embracesdk.internal.capture.experiment.ExperimentApiCall
 import io.embrace.android.embracesdk.internal.capture.experiment.ExperimentKind
 import io.embrace.android.embracesdk.internal.capture.experiment.TrackedData
 import io.embrace.android.embracesdk.internal.config.resolved.ExperimentConfig
-import io.embrace.android.embracesdk.internal.injection.ModuleInitBootstrapper
 import io.embrace.android.embracesdk.internal.instance.BufferingSdkInstance
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -28,8 +24,6 @@ internal class ExperimentApiDelegateTest {
     private lateinit var delegate: ExperimentApiDelegate
     private lateinit var fakeExperimentTrackingService: FakeExperimentTrackingService
     private lateinit var initLogger: FakeInternalLogger
-    private lateinit var checkerLogger: FakeInternalLogger
-    private lateinit var sdkCallChecker: SdkCallChecker
     private lateinit var clock: FakeClock
     private lateinit var initModule: FakeInitModule
     private lateinit var bufferLogger: FakeInternalLogger
@@ -39,11 +33,9 @@ internal class ExperimentApiDelegateTest {
     fun setUp() {
         fakeExperimentTrackingService = FakeExperimentTrackingService()
         initLogger = FakeInternalLogger()
-        checkerLogger = FakeInternalLogger(throwOnInternalError = false)
 
         initModule = FakeInitModule(logger = initLogger, otelSdkMode = OtelSdkMode.COMPAT)
         clock = checkNotNull(initModule.getFakeClock())
-        sdkCallChecker = SdkCallChecker(checkerLogger)
         delegate = createDelegate()
         bufferLogger = FakeInternalLogger()
         buffer = BufferingSdkInstance(clock, bufferLogger)
@@ -213,8 +205,6 @@ internal class ExperimentApiDelegateTest {
 
     @Test
     fun `trackExperiment after SDK start calls into the internal service immediately`() {
-        sdkCallChecker.started.set(true)
-
         delegate.trackExperiment("exp1", variant = "v1", startedAt = 111L)
 
         assertEquals(
@@ -225,8 +215,6 @@ internal class ExperimentApiDelegateTest {
 
     @Test
     fun `untrackExperiments after SDK start calls into the internal service immediately`() {
-        sdkCallChecker.started.set(true)
-
         delegate.untrackExperiments(listOf("exp1", "exp2"), endedAt = 222L)
 
         assertEquals(
@@ -237,8 +225,6 @@ internal class ExperimentApiDelegateTest {
 
     @Test
     fun `trackFeatureFlag after SDK start calls into the internal service immediately`() {
-        sdkCallChecker.started.set(true)
-
         delegate.trackFeatureFlag("flag1", variant = "on", startedAt = 333L)
 
         assertEquals(
@@ -249,8 +235,6 @@ internal class ExperimentApiDelegateTest {
 
     @Test
     fun `untrackFeatureFlag after SDK start calls into the internal service immediately`() {
-        sdkCallChecker.started.set(true)
-
         delegate.untrackFeatureFlag("flag1", endedAt = 444L)
 
         assertEquals(
@@ -261,8 +245,6 @@ internal class ExperimentApiDelegateTest {
 
     @Test
     fun `omitted timestamps after SDK start resolve to the clock time at the moment of the call`() {
-        sdkCallChecker.started.set(true)
-
         val trackTimeMs = clock.now()
         delegate.trackFeatureFlag("flag1")
         val untrackTimeMs = clock.tick()
@@ -280,8 +262,6 @@ internal class ExperimentApiDelegateTest {
 
     @Test
     fun `single-entry and bulk forms produce identical results`() {
-        sdkCallChecker.started.set(true)
-
         delegate.trackExperiment("exp1", variant = "v1", startedAt = 111L)
         delegate.trackExperiments(listOf(delegate.createExperiment("exp1", variant = "v1", startedAt = 111L)))
         delegate.trackFeatureFlag("flag1", variant = "on", startedAt = 222L)
@@ -299,21 +279,11 @@ internal class ExperimentApiDelegateTest {
     }
 
     @Test
-    fun `calls before start are dropped with an error`() {
-        delegate.trackExperiment("exp1", startedAt = 1L)
-        delegate.untrackFeatureFlag("flag1", endedAt = 1L)
-        delegate.replay(listOf(ExperimentApiCall.Track(listOf(TrackedData.experiment("exp2", 1L, null)))))
-        assertEquals(0, fakeExperimentTrackingService.serviceInvocations)
-        assertEquals(2, checkerLogger.sdkNotInitializedMessages.size)
-    }
-
-    @Test
     fun `replayed calls are committed in one service call`() {
         val calls = listOf(
             ExperimentApiCall.Track(listOf(TrackedData.experiment("exp1", 111L, "v1"))),
             ExperimentApiCall.Untrack(ExperimentKind.FEATURE_FLAG, listOf("flag1"), 222L),
         )
-        sdkCallChecker.started.set(true)
         delegate.replay(calls)
 
         assertEquals(1, fakeExperimentTrackingService.serviceInvocations)
@@ -322,15 +292,12 @@ internal class ExperimentApiDelegateTest {
 
     @Test
     fun `replaying no calls does not call the service`() {
-        sdkCallChecker.started.set(true)
         delegate.replay(emptyList())
         assertEquals(0, fakeExperimentTrackingService.serviceInvocations)
     }
 
     @Test
     fun `empty bulk calls do not throw and leave nothing tracked`() {
-        sdkCallChecker.started.set(true)
-
         delegate.trackExperiments(emptyList())
         delegate.untrackExperiments(emptyList(), endedAt = 0L)
         delegate.trackFeatureFlags(emptyList())
@@ -341,25 +308,19 @@ internal class ExperimentApiDelegateTest {
     }
 
     private fun createDelegate(): ExperimentApiDelegate {
-        val moduleInitBootstrapper = ModuleInitBootstrapper(
-            initModule,
-            configServiceSupplier = { _, _, _, _, _ -> FakeConfigService() },
-            essentialServiceModuleSupplier = { _, _, _, _, _, _, _, _, _ ->
-                FakeEssentialServiceModule(experimentTrackingService = fakeExperimentTrackingService)
-            },
+        return ExperimentApiDelegate(
+            clock = initModule.clock,
+            experimentTrackingService = lazy { fakeExperimentTrackingService },
         )
-        moduleInitBootstrapper.init(ApplicationProvider.getApplicationContext())
-        return ExperimentApiDelegate(moduleInitBootstrapper, sdkCallChecker)
     }
 
     private fun startAndDrain() {
-        sdkCallChecker.started.set(true)
         buffer.drainExperimentCalls(delegate, delegate::replay)
     }
 
     private fun assertNoErrorsLogged() {
-        assertTrue(checkerLogger.sdkNotInitializedMessages.isEmpty())
         assertTrue(bufferLogger.infoMessages.isEmpty())
+        assertTrue(bufferLogger.warningMessages.isEmpty())
     }
 
     private companion object {

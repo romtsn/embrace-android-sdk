@@ -3,7 +3,6 @@ package io.embrace.android.embracesdk.testframework
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
-import io.embrace.android.embracesdk.EmbraceImpl
 import io.embrace.android.embracesdk.fakes.FakeClock
 import io.embrace.android.embracesdk.fakes.FakeConfigService
 import io.embrace.android.embracesdk.fakes.TestPlatformSerializer
@@ -23,8 +22,11 @@ import io.embrace.android.embracesdk.internal.injection.DeliveryModule
 import io.embrace.android.embracesdk.internal.injection.EssentialServiceModule
 import io.embrace.android.embracesdk.internal.injection.EssentialServiceModuleImpl
 import io.embrace.android.embracesdk.internal.injection.InitModule
-import io.embrace.android.embracesdk.internal.injection.ModuleInitBootstrapper
-import io.embrace.android.embracesdk.internal.instance.SdkApiDispatcher
+import io.embrace.android.embracesdk.internal.injection.InitializedModuleGraph
+import io.embrace.android.embracesdk.internal.injection.ModuleGraphSupplier
+import io.embrace.android.embracesdk.internal.instance.SdkState
+import io.embrace.android.embracesdk.internal.instance.SdkStateHolder
+import io.embrace.android.embracesdk.internal.instance.createSdkStateHolder
 import io.embrace.android.embracesdk.internal.utils.EmbTrace
 import io.embrace.android.embracesdk.internal.utils.Provider
 import io.embrace.android.embracesdk.testframework.actions.EmbraceActionInterface
@@ -37,12 +39,12 @@ import io.embrace.android.embracesdk.testframework.export.FilteredSpanExporter
 import io.embrace.android.embracesdk.testframework.server.FakeApiServer
 import io.opentelemetry.kotlin.logging.export.toOtelKotlinLogRecordExporter
 import io.opentelemetry.kotlin.tracing.export.toOtelKotlinSpanExporter
-import java.io.File
 import kotlinx.coroutines.runBlocking
 import okhttp3.Protocol
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.assertEquals
 import org.junit.rules.ExternalResource
+import java.io.File
 
 /**
  * A [org.junit.Rule] that is responsible for setting up and tearing down the Embrace SDK for use in
@@ -72,6 +74,10 @@ import org.junit.rules.ExternalResource
  * a custom supplier to create an instance of [EmbraceSetupInterface] with custom overridden constructor parameters, be
  * careful when you do so by passing in overridden module instances as that might break the integrity of the
  * "one instance" guarantee of using the modules created by default (besides the fakes).
+ *
+ * Each test gets its own [SdkStateHolder], and test code calls the SDK through [SdkStateHolder.api]. The public
+ * [Embrace] object delegates to that same API, so tests exercise the production lifecycle and dispatch logic,
+ * without the pain of dealing with a singleton in parallelized unit tests.
  *
  * It is also possible to access internal modules & dependencies that are not exposed via the public API.
  * For example, it is possible to access the [FakeDeliveryModule] to get event/session payloads the SDK sent.
@@ -114,11 +120,17 @@ internal class SdkIntegrationTestRule(
     private lateinit var otelAssertion: EmbraceOtelExportAssertionInterface
     private lateinit var spanExporter: FilteredSpanExporter
     private lateinit var logExporter: FilteredLogExporter
-    private lateinit var embraceImpl: EmbraceImpl
-    private lateinit var sdkApi: SdkApiDispatcher
+    private lateinit var sdkStateHolder: SdkStateHolder
     private lateinit var baseUrl: String
 
-    lateinit var bootstrapper: ModuleInitBootstrapper
+    private lateinit var moduleGraphSupplier: ModuleGraphSupplier
+    private var createdModuleGraph: InitializedModuleGraph? = null
+
+    /**
+     * The module graph created when the SDK under test started.
+     */
+    val moduleGraph: InitializedModuleGraph
+        get() = checkNotNull(createdModuleGraph) { "SDK not initialized" }
 
     /**
      * Runs a test case. The test case should be separated into 3 parts: setup, action, and
@@ -151,31 +163,40 @@ internal class SdkIntegrationTestRule(
         }
         baseUrl = server.url("api").toString()
 
-        preSdkStart = EmbracePreSdkStartInterface(setup) { sdkApi }
-        bootstrapper = setup.createBootstrapper(
+        preSdkStart = EmbracePreSdkStartInterface(setup) { sdkStateHolder.api }
+        createdModuleGraph = null
+        moduleGraphSupplier = setup.createModuleGraphSupplier(
             localConfig.copy(
                 baseUrls = FakeBaseUrlConfig(configImpl = baseUrl, dataImpl = baseUrl)
             ),
             deliveryTracer
         )
-        action = EmbraceActionInterface(setup, bootstrapper) { sdkApi }
-        payloadAssertion = EmbracePayloadAssertionInterface(bootstrapper, apiServer)
+        action = EmbraceActionInterface(
+            setup,
+            { moduleGraph.instrumentationModule.instrumentationRegistry },
+            { sdkStateHolder.api },
+            { sdkStateHolder.state },
+        )
+        payloadAssertion = EmbracePayloadAssertionInterface(
+            setup.initModule,
+            deliveryTracer,
+            apiServer,
+        ) { sdkStateHolder.state }
         spanExporter = FilteredSpanExporter()
         logExporter = FilteredLogExporter()
         otelAssertion = EmbraceOtelExportAssertionInterface(spanExporter, logExporter)
 
         setupAction(setup)
         with(setup) {
-            embraceImpl = EmbraceImpl(bootstrapper = bootstrapper)
-            sdkApi = SdkApiDispatcher(embraceImpl, embraceImpl.telemetryService)
+            sdkStateHolder = createStateHolder()
             preSdkStartAction(preSdkStart)
             //TODO: Filtered span and log exporters should be migrated to Kotlin.
-            embraceImpl.addSpanExporter(spanExporter.toOtelKotlinSpanExporter())
-            embraceImpl.addLogRecordExporter(logExporter.toOtelKotlinLogRecordExporter())
+            sdkStateHolder.api.addSpanExporter(spanExporter.toOtelKotlinSpanExporter())
+            sdkStateHolder.api.addLogRecordExporter(logExporter.toOtelKotlinLogRecordExporter())
 
             // persist config here before the SDK starts up: the SDK reads it during start()
             persistConfig(persistedConfig)
-            bootstrapper.openTelemetryModule.applyConfiguration(
+            setup.openTelemetryModule.applyConfiguration(
                 sensitiveKeysBehavior = SensitiveKeysBehavior(resolveSensitiveKeys(localConfig)),
                 bypassValidation = false,
                 otelBehavior = OtelBehaviorImpl(BehaviorThresholdCheck { "123456" }, localConfig, persistedConfig),
@@ -183,23 +204,29 @@ internal class SdkIntegrationTestRule(
             )
 
             if (startSdk) {
-                embraceImpl.start(ApplicationProvider.getApplicationContext())
+                sdkStateHolder.api.start(ApplicationProvider.getApplicationContext())
                 assertEquals(
                     "SDK did not start in integration test.",
                     expectSdkToStart,
-                    embraceImpl.isStarted
+                    sdkStateHolder.api.isStarted
                 )
-                if (embraceImpl.isStarted) {
+                assertEquals(
+                    "SDK state holder did not reach the expected state.",
+                    if (expectSdkToStart) SdkState.STARTED else SdkState.FAILED,
+                    sdkStateHolder.state
+                )
+                if (sdkStateHolder.api.isStarted) {
                     assertEquals(
                         "SDK did not select the $otelSdkMode opentelemetry-kotlin implementation.",
                         otelSdkMode.useKotlinSdk,
-                        bootstrapper.openTelemetryModule.otelSdkWrapper.useKotlinSdk,
+                        setup.openTelemetryModule.otelSdkWrapper.useKotlinSdk,
                     )
                 }
                 awaitAsyncInstrumentation()
             }
         }
         testCaseAction(action)
+        setup.runDueLogBatchChecks()
         drainExternalExports()
         assertAction(payloadAssertion)
         spanExporter.failOnDuplicate()
@@ -207,7 +234,7 @@ internal class SdkIntegrationTestRule(
     }
 
     private fun drainExternalExports() {
-        val otelSdkConfig = bootstrapper.openTelemetryModule.otelSdkConfig
+        val otelSdkConfig = setup.openTelemetryModule.otelSdkConfig
         runBlocking {
             otelSdkConfig.spanProcessor.forceFlush()
             otelSdkConfig.logRecordProcessor.forceFlush()
@@ -242,9 +269,17 @@ internal class SdkIntegrationTestRule(
      * Teardown the Embrace SDK, closing any resources as required
      */
     override fun after() {
-        if (::embraceImpl.isInitialized) {
-            embraceImpl.stop()
+        if (::sdkStateHolder.isInitialized) {
+            sdkStateHolder.close()
         }
+    }
+
+    private fun createStateHolder(): SdkStateHolder {
+        return createSdkStateHolder(
+            bootstrapServices = setup.bootstrapServices,
+            moduleGraphSupplier = moduleGraphSupplier,
+            onModuleGraphCreated = { createdModuleGraph = it },
+        )
     }
 
     companion object {

@@ -1,8 +1,6 @@
 package io.embrace.android.embracesdk.internal.instrumentation.view
 
 import android.app.Activity
-import androidx.test.core.app.ApplicationProvider
-import androidx.test.ext.junit.runners.AndroidJUnit4
 import io.embrace.android.embracesdk.fakes.FakeInstrumentationArgs
 import io.embrace.android.embracesdk.fakes.FakeSpanToken
 import io.embrace.android.embracesdk.internal.arch.attrs.asPair
@@ -15,21 +13,21 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
-import org.junit.runner.RunWith
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
-@RunWith(AndroidJUnit4::class)
 internal class ViewDataSourceTest {
 
     private lateinit var dataSource: ViewDataSource
+    private lateinit var application: FakeApplication
     private lateinit var args: FakeInstrumentationArgs
     private lateinit var activity: Activity
 
     @Before
     fun setUp() {
-        args = FakeInstrumentationArgs(ApplicationProvider.getApplicationContext())
+        application = FakeApplication()
+        args = FakeInstrumentationArgs(application = application)
         dataSource = ViewDataSource(args)
         activity = Activity()
     }
@@ -288,6 +286,21 @@ internal class ViewDataSourceTest {
 
         val span = args.destination.createdSpans.single { it.type == EmbType.Ux.View }
         verifyManualViewSpan(span, false)
+    }
+
+    @Test
+    fun `activity lifecycle callbacks are registered when data capture is enabled`() {
+        dataSource.onDataCaptureEnabled()
+        application.lifecycleCallbacks.forEach { it.onActivityStarted(activity) }
+        assertEquals(EmbType.Ux.View, args.destination.createdSpans.single().type)
+    }
+
+    @Test
+    fun `activity lifecycle callbacks are unregistered when data capture is disabled`() {
+        dataSource.onDataCaptureEnabled()
+        dataSource.onDataCaptureDisabled()
+        application.lifecycleCallbacks.forEach { it.onActivityStarted(activity) }
+        assertTrue(args.destination.createdSpans.isEmpty())
     }
 
     private fun verifyManualViewSpan(span: FakeSpanToken, isRecording: Boolean) {

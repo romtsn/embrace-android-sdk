@@ -26,7 +26,7 @@ import org.junit.runners.Parameterized
 
 /**
  * Captures a perfetto trace per iteration of each scenario in [PersistenceScenarios], so that the
- * cost of persisting a realistically shaped session can be compared between storage layers.
+ * cost of persisting a realistically shaped session can be compared between persistence modes.
  */
 @RunWith(Parameterized::class)
 internal class PersistenceScenarioBenchmark(
@@ -82,7 +82,7 @@ internal class PersistenceScenarioBenchmark(
                 else -> error(
                     "$scenarioId did not complete: $outcome. 'sdk-not-started' means the app has " +
                         "no appId, which happens when the Embrace gradle plugin is not in " +
-                        "mavenLocal - run the benchmark again (see README)."
+                        "build/integration-repo - run the benchmark again (see README)."
                 )
             }
         }

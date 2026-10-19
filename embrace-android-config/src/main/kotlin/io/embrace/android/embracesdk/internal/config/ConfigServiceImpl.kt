@@ -11,8 +11,6 @@ import io.embrace.android.embracesdk.internal.config.resolved.EmbraceConfig
 import io.embrace.android.embracesdk.internal.config.resolved.resolveConfig
 import io.embrace.android.embracesdk.internal.config.rollout.PCT_ROLLOUT_FLAGS
 import io.embrace.android.embracesdk.internal.config.source.CombinedRemoteConfigSource
-import io.embrace.android.embracesdk.internal.config.source.ConfigEndpoint
-import io.embrace.android.embracesdk.internal.config.source.OkHttpRemoteConfigSource
 import io.embrace.android.embracesdk.internal.config.source.RemoteConfigSource
 import io.embrace.android.embracesdk.internal.logging.InternalErrorType
 import io.embrace.android.embracesdk.internal.logging.InternalLogger
@@ -20,7 +18,6 @@ import io.embrace.android.embracesdk.internal.payload.AppFramework
 import io.embrace.android.embracesdk.internal.payload.NativeSymbols
 import io.embrace.android.embracesdk.internal.serialization.PlatformSerializer
 import io.embrace.android.embracesdk.internal.worker.BackgroundWorker
-import okhttp3.OkHttpClient
 import okio.ByteString.Companion.decodeBase64
 
 /**
@@ -31,10 +28,8 @@ class ConfigServiceImpl(
     private val persistedConfig: PersistedConfig,
     worker: BackgroundWorker,
     private val serializer: PlatformSerializer,
-    okHttpClient: Lazy<OkHttpClient>,
+    remoteConfigSource: RemoteConfigSource,
     private val primaryAbi: String,
-    private val sdkVersion: String,
-    private val apiLevel: Int,
     private val logger: InternalLogger,
     private val hasConfiguredOtlpExport: () -> Boolean,
 ) : ConfigService {
@@ -56,38 +51,14 @@ class ConfigServiceImpl(
         CombinedRemoteConfigSource(
             store = store,
             response = persistedConfig.response,
-            httpSource = lazy { checkNotNull(remoteConfigSource) },
+            httpSource = remoteConfigSource,
             worker = worker,
         )
     }
 
     override val deviceId: String by lazy { persistedConfig.deviceId }
 
-    private val remoteConfigSource: RemoteConfigSource? by lazy {
-        if (persistedConfig.onlyOtelExportEnabled) {
-            return@lazy null
-        }
-
-        OkHttpRemoteConfigSource(
-            okhttpClient = okHttpClient,
-            serializer = serializer,
-            configEndpoint = ConfigEndpoint(
-                deviceId,
-                buildInfo.versionName,
-                instrumentedConfig,
-                sdkVersion,
-                apiLevel,
-            ),
-        )
-    }
-
     private val remoteConfig: RemoteConfig? = persistedConfig.remoteConfig
-
-    // kick off config HTTP request early so the SDK can't get in a permanently disabled state.
-    // scheduled only after deviceId is resolved, since the request reads it.
-    init {
-        combinedRemoteConfigSource?.scheduleConfigRequests()
-    }
 
     private val thresholdCheck: BehaviorThresholdCheck = persistedConfig.thresholdCheck
 
@@ -120,6 +91,10 @@ class ConfigServiceImpl(
     }
 
     override fun isOnlyUsingOtelExporters(): Boolean = appId.isNullOrEmpty()
+
+    override fun scheduleConfigRequests() {
+        combinedRemoteConfigSource?.scheduleConfigRequests()
+    }
 
     override val appFramework: AppFramework = instrumentedConfig.project.getAppFramework()?.let {
         AppFramework.fromString(it)

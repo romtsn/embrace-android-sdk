@@ -1,8 +1,8 @@
 plugins {
     id("embrace-jvm-conventions")
     id("java-gradle-plugin")
-    id("groovy")
     id("com.vanniktech.maven.publish")
+    id("embrace-integration-test-repo-conventions")
     id("org.jetbrains.kotlin.plugin.serialization")
     alias(libs.plugins.buildconfig)
 }
@@ -23,6 +23,7 @@ dependencies {
     testImplementation(libs.mockk)
     testImplementation(libs.mockwebserver)
     testImplementation(project(":embrace-test-common"))
+    testRuntimeOnly(project(":embrace-android-config")) { isTransitive = false }
 }
 
 buildConfig {
@@ -46,6 +47,7 @@ gradlePlugin {
 // Configure Vanniktech Maven Publish Plugin
 mavenPublishing {
     coordinates("io.embrace", "embrace-gradle-plugin", project.version.toString())
+    configureIntegrationPublish(project)
 
     publishToMavenCentral()
 

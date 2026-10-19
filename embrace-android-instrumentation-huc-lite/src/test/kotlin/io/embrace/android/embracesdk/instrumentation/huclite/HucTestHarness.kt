@@ -1,6 +1,5 @@
 package io.embrace.android.embracesdk.instrumentation.huclite
 
-import androidx.test.core.app.ApplicationProvider
 import io.embrace.android.embracesdk.fakes.FakeClock
 import io.embrace.android.embracesdk.fakes.FakeClock.Companion.DEFAULT_FAKE_CURRENT_TIME
 import io.embrace.android.embracesdk.fakes.FakeInstrumentationArgs
@@ -9,6 +8,8 @@ import io.embrace.android.embracesdk.fakes.FakeSpanToken
 import io.embrace.android.embracesdk.fakes.FakeTelemetryDestination
 import io.embrace.android.embracesdk.internal.arch.schema.ErrorCodeAttribute
 import io.embrace.android.embracesdk.internal.instrumentation.HucLiteDataSource
+import io.embrace.android.embracesdk.internal.utils.BuildVersionChecker
+import io.embrace.android.embracesdk.internal.utils.VersionChecker
 import io.mockk.every
 import io.mockk.mockk
 import io.opentelemetry.kotlin.semconv.ErrorAttributes
@@ -22,13 +23,12 @@ import java.io.IOException
 import java.net.URL
 import javax.net.ssl.HttpsURLConnection
 
-internal class HucTestHarness {
+internal class HucTestHarness(versionChecker: VersionChecker = BuildVersionChecker) {
     val fakeTelemetryDestination: FakeTelemetryDestination = FakeTelemetryDestination()
     val fakeClock = FakeClock(FAKE_TIME_MS)
     val fakeEmbLogger = FakeInternalLogger(throwOnInternalError = false)
     val hucLiteDataSource = HucLiteDataSource(
         FakeInstrumentationArgs(
-            application = ApplicationProvider.getApplicationContext(),
             destination = fakeTelemetryDestination,
             logger = fakeEmbLogger,
             clock = fakeClock,
@@ -49,6 +49,7 @@ internal class HucTestHarness {
         wrappedConnection = mockWrappedConnection,
         clock = fakeClock,
         hucLiteDataSource = hucLiteDataSource,
+        versionChecker = versionChecker,
     )
 
     fun runTest(test: HucTestHarness.() -> Unit) = test()

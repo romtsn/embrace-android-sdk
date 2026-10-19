@@ -2,12 +2,10 @@ package io.embrace.android.embracesdk.testframework.actions
 
 import android.app.ActivityManager
 import android.content.Context
-import android.os.Build
 import android.os.Looper
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.testing.TestLifecycleOwner
 import io.embrace.android.embracesdk.concurrency.BlockingScheduledExecutorService
-import io.embrace.android.embracesdk.core.BuildConfig
 import io.embrace.android.embracesdk.fakes.FakeClock
 import io.embrace.android.embracesdk.fakes.FakeInternalLogger
 import io.embrace.android.embracesdk.fakes.FakeJniDelegate
@@ -28,21 +26,29 @@ import io.embrace.android.embracesdk.internal.arch.InstrumentationRegistry
 import io.embrace.android.embracesdk.internal.clock.millisToNanos
 import io.embrace.android.embracesdk.internal.config.BuildInfo
 import io.embrace.android.embracesdk.internal.config.ConfigService
-import io.embrace.android.embracesdk.internal.config.ConfigServiceImpl
 import io.embrace.android.embracesdk.internal.delivery.debug.DeliveryTracer
+import io.embrace.android.embracesdk.internal.delivery.storage.PayloadStorageServiceImpl
 import io.embrace.android.embracesdk.internal.delivery.storage.StorageLocation
 import io.embrace.android.embracesdk.internal.delivery.storage.asFile
+import io.embrace.android.embracesdk.internal.injection.BootstrapServices
 import io.embrace.android.embracesdk.internal.injection.CoreModule
 import io.embrace.android.embracesdk.internal.injection.CoreModuleImpl
 import io.embrace.android.embracesdk.internal.injection.DeliveryModuleImpl
 import io.embrace.android.embracesdk.internal.injection.EssentialServiceModuleImpl
+import io.embrace.android.embracesdk.internal.injection.InitModule
+import io.embrace.android.embracesdk.internal.injection.InitializedModuleGraph
 import io.embrace.android.embracesdk.internal.injection.InstrumentationModule
 import io.embrace.android.embracesdk.internal.injection.InstrumentationModuleImpl
-import io.embrace.android.embracesdk.internal.injection.ModuleInitBootstrapper
+import io.embrace.android.embracesdk.internal.injection.LogModuleImpl
+import io.embrace.android.embracesdk.internal.injection.ModuleGraphSupplier
+import io.embrace.android.embracesdk.internal.injection.OpenTelemetryModule
 import io.embrace.android.embracesdk.internal.injection.WorkerThreadModule
 import io.embrace.android.embracesdk.internal.injection.WorkerThreadModuleImpl
+import io.embrace.android.embracesdk.internal.injection.createConfigService
+import io.embrace.android.embracesdk.internal.instance.BufferingSdkInstance
 import io.embrace.android.embracesdk.internal.instrumentation.crash.ndk.jniDelegateTestOverride
 import io.embrace.android.embracesdk.internal.instrumentation.crash.ndk.sharedObjectLoaderTestOverride
+import io.embrace.android.embracesdk.internal.instrumentation.startup.DataCaptureServiceModuleImpl
 import io.embrace.android.embracesdk.internal.instrumentation.startup.SdkInitResourceUsageTracker
 import io.embrace.android.embracesdk.internal.instrumentation.thread.blockage.createThreadBlockageService
 import io.embrace.android.embracesdk.internal.logging.InternalErrorType
@@ -64,6 +70,9 @@ import io.embrace.android.embracesdk.internal.session.persistence.SessionPartWri
 import io.embrace.android.embracesdk.internal.spans.CurrentSessionPartSpan
 import io.embrace.android.embracesdk.internal.store.KeyValueStore
 import io.embrace.android.embracesdk.internal.utils.UuidSource
+import io.embrace.android.embracesdk.internal.utils.VersionChecker
+import io.embrace.android.embracesdk.internal.vitals.vitalsVersionCheckerTestOverride
+import io.embrace.android.embracesdk.internal.worker.BackgroundWorker
 import io.embrace.android.embracesdk.internal.worker.Worker
 import io.embrace.android.embracesdk.internal.worker.Worker.Background.NonIoRegWorker
 import io.embrace.android.embracesdk.semconv.EmbCommonAttributes
@@ -84,6 +93,10 @@ import kotlin.time.Duration.Companion.seconds
  *
  * Defaults to a [TestUuidSource] that randomizes the UUIDs it generates. A custom [UuidSource] can be
  * used instead for, say, tests that require predictable UUID sequences to be generated.
+ *
+ * [simulatedSdkInt] makes the startup trace, UI load and vitals instrumentation take the branches
+ * they would on that API level, so a test can cover an older platform on Robolectric's default SDK
+ * rather than paying for an extra sandbox.
  */
 internal class EmbraceSetupInterface(
     private val workersToFake: List<Worker.Background> = emptyList(),
@@ -92,8 +105,16 @@ internal class EmbraceSetupInterface(
     ignoredInternalErrors: List<InternalErrorType> = listOf(),
     val fakeClock: FakeClock = FakeClock(currentTime = SdkIntegrationTestRule.DEFAULT_SDK_START_TIME_MS),
     private val uuidSource: UuidSource = TestUuidSource(Random.nextInt()),
+    simulatedSdkInt: Int? = null,
+    private val payloadStorageLimit: Int = PayloadStorageServiceImpl.DEFAULT_STORAGE_LIMIT,
 ) {
     private val processIdentifier: String = uuidSource.createUuid()
+
+    private val simulatedVersionChecker: VersionChecker? = simulatedSdkInt?.let { sdkInt ->
+        VersionChecker { min -> sdkInt >= min }
+    }.also {
+        vitalsVersionCheckerTestOverride = it
+    }
 
     val fakeNetworkConnectivityService = FakeNetworkConnectivityService()
     val fakeJniDelegate = FakeJniDelegate().also {
@@ -117,6 +138,11 @@ internal class EmbraceSetupInterface(
     val shadowMainLooper: ShadowLooper = Shadows.shadowOf(Looper.getMainLooper())
     val unblockMainLooperOnNavigation: Boolean = threadBlockageWatchdogThread == null
 
+    /**
+     * When set, module graph construction throws this partway through, as the core module is created.
+     */
+    var moduleGraphFailure: Throwable? = null
+
     private val fakeInitModule: FakeInitModule = FakeInitModule(
         clock = fakeClock,
         logger = FakeInternalLogger(ignoredErrors = ignoredInternalErrors),
@@ -125,16 +151,28 @@ internal class EmbraceSetupInterface(
         otelSdkMode = OtelSdkMode.COMPAT,
     )
 
+    val bootstrapServices: BootstrapServices
+        get() = fakeInitModule.bootstrapServices
+
+    val initModule: InitModule
+        get() = fakeInitModule
+
+    val openTelemetryModule: OpenTelemetryModule
+        get() = fakeInitModule.openTelemetryModule
+
     private val workerThreadModule: WorkerThreadModule = initWorkerThreadModule(
         fakeInitModule = fakeInitModule,
         workersToFake = workersToFake,
         threadBlockageWatchdogThread = threadBlockageWatchdogThread
     )
 
+    /** Runs the log orchestrator's batch checks on the fake clock rather than after real delays. */
+    private val logOrchestratorExecutor = BlockingScheduledExecutorService(fakeClock, blockingMode = false)
+
     private val fakeCoreModule: CoreModule = FakeCoreModule()
 
     /**
-     * The SDK's store, backed by the same `SharedPreferences` the bootstrapper will use. Owned here
+     * The SDK's store, backed by the same `SharedPreferences` the module graph will use. Owned here
      * rather than read off [CoreModule] because tests write to it in `setupAction`, before the module
      * graph exists.
      */
@@ -146,33 +184,35 @@ internal class EmbraceSetupInterface(
         setupPlatformShadows()
     }
 
-    fun createBootstrapper(
+    fun createModuleGraphSupplier(
         instrumentedConfig: FakeInstrumentedConfig,
         deliveryTracer: DeliveryTracer,
-    ): ModuleInitBootstrapper = ModuleInitBootstrapper(
-        initModule = fakeInitModule.apply {
-            this.instrumentedConfig = instrumentedConfig
-        },
-        openTelemetryModule = fakeInitModule.openTelemetryModule,
+    ): ModuleGraphSupplier {
+        fakeInitModule.instrumentedConfig = instrumentedConfig
+        return { context, bootstrapServices, buffer ->
+            createModuleGraph(context, bootstrapServices, buffer, deliveryTracer)
+        }
+    }
+
+    private fun createModuleGraph(
+        context: Context,
+        bootstrapServices: BootstrapServices,
+        buffer: BufferingSdkInstance,
+        deliveryTracer: DeliveryTracer,
+    ): InitializedModuleGraph = InitializedModuleGraph(
+        context = context,
+        bootstrapServices = bootstrapServices,
+        buffer = buffer,
+        initModuleSupplier = { fakeInitModule },
+        openTelemetryModuleSupplier = { _, _ -> fakeInitModule.openTelemetryModule },
         // forwards the supplied store so the module shares one instance with PersistedConfig, as in production
         coreModuleSupplier = { _, _, suppliedStore ->
+            moduleGraphFailure?.let { throw it }
             CoreModuleImpl(fakeCoreModule.context, fakeInitModule, suppliedStore)
         },
         workerThreadModuleSupplier = { workerThreadModule },
         configServiceSupplier = { initModule, _, openTelemetryModule, workerThreadModule, persistedConfig ->
-            val impl = ConfigServiceImpl(
-                instrumentedConfig = initModule.instrumentedConfig,
-                persistedConfig = persistedConfig,
-                worker = workerThreadModule.backgroundWorker(Worker.Background.HttpRequestWorker),
-                serializer = initModule.jsonSerializer,
-                okHttpClient = initModule.okHttpClient,
-                hasConfiguredOtlpExport = openTelemetryModule.otelSdkConfig::hasConfiguredOtlpExport,
-                sdkVersion = BuildConfig.VERSION_NAME,
-                apiLevel = Build.VERSION.SDK_INT,
-                primaryAbi = initModule.systemInfo.primaryAbi,
-                logger = initModule.logger,
-            )
-            DecoratedConfigService(impl)
+            DecoratedConfigService(createConfigService(initModule, openTelemetryModule, workerThreadModule, persistedConfig))
         },
         essentialServiceModuleSupplier = { initModule, configService, openTelemetryModule, coreModule, workerThreadModule, startupContext, _, _, sessionOrchestratorProvider ->
             EssentialServiceModuleImpl(
@@ -198,7 +238,8 @@ internal class EmbraceSetupInterface(
                 requestExecutionServiceProvider = null,
                 payloadStorageServiceProvider = fakePayloadStorageService?.let { { it } },
                 cacheStorageServiceProvider = fakeCacheStorageService?.let { { it } },
-                deliveryTracer = deliveryTracer
+                deliveryTracer = deliveryTracer,
+                payloadStorageLimit = payloadStorageLimit,
             )
         },
         threadBlockageServiceSupplier = { args ->
@@ -235,8 +276,44 @@ internal class EmbraceSetupInterface(
                 override val instrumentationArgs: InstrumentationArgs = impl.instrumentationArgs
             }
         },
+        logModuleSupplier = { initModule, openTelemetryModule, essentialServiceModule, configService, deliveryModule, workerThreadModule, payloadSourceModule ->
+            val logWorker = BackgroundWorker(logOrchestratorExecutor)
+            LogModuleImpl(
+                initModule,
+                openTelemetryModule,
+                essentialServiceModule,
+                configService,
+                deliveryModule,
+                object : WorkerThreadModule by workerThreadModule {
+                    override fun backgroundWorker(worker: Worker.Background): BackgroundWorker = logWorker
+                },
+                payloadSourceModule,
+            )
+        },
+        dataCaptureServiceModuleSupplier = simulatedVersionChecker?.let { versionChecker ->
+            { clock, logger, destination, configService, appVersionStartupCounterProvider, startupClassifier, _, activityManager, backgroundWorker ->
+                DataCaptureServiceModuleImpl(
+                    clock = clock,
+                    logger = logger,
+                    destination = destination,
+                    configService = configService,
+                    appVersionStartupCounterProvider = appVersionStartupCounterProvider,
+                    startupClassifier = startupClassifier,
+                    versionChecker = versionChecker,
+                    activityManager = activityManager,
+                    backgroundWorker = backgroundWorker,
+                )
+            }
+        },
         sdkInitResourceUsageTrackerSupplier = { fakeSdkInitResourceUsageTracker() },
     )
+
+    /**
+     * Runs the log batch checks that are due at the fake clock's current time.
+     */
+    fun runDueLogBatchChecks() {
+        logOrchestratorExecutor.runCurrentlyBlocked()
+    }
 
     /**
      * Setup a fake dead session on disk
@@ -278,7 +355,7 @@ internal class EmbraceSetupInterface(
             "Could not create session part directory ${directory.dirName}"
         }
 
-        val target = SessionPartWriteTarget(sessionsDir) { directory }
+        val target = SessionPartWriteTarget(sessionsDir, fakeClock) { directory }
         SessionMetadataWriter(
             target = target,
             metadataSource = { EnvelopeMetadata() },

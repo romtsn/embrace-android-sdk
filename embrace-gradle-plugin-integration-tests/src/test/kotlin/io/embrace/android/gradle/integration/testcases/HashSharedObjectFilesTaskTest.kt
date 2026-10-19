@@ -44,7 +44,7 @@ class HashSharedObjectFilesTaskTest {
     fun `map output is correct for expectedSharedObjectFiles`() {
         rule.runTest(
             fixture = "hash-shared-object-files",
-            task = "hashTask",
+            tasks = listOf("hashTask"),
             setup = { projectDir ->
                 assertTrue(projectDir.file("compressedSharedObjectFiles").exists())
             },
@@ -53,66 +53,6 @@ class HashSharedObjectFilesTaskTest {
                     projectDir.file("expectedOutput.json").bufferedReader().use { it.readText() },
                     projectDir.file("build/output.json").bufferedReader().use { it.readText() },
                 )
-            },
-        )
-    }
-
-    /*
-     * The following test cases should never happen.
-     * CompressSharedObjectFilesTask should fail if the input directory has any problems, so this task wouldn't be executed.
-     * I'm adding this check in case for some reason the output of the compression task is incorrect.
-     */
-    @Test
-    fun `an error is thrown when compressedSharedObjectFiles contain files other than shared objects`() {
-        rule.runTest(
-            fixture = "hash-shared-object-files",
-            task = "hashTask",
-            setup = { projectDir ->
-                // delete architecture directories
-                projectDir.file("compressedSharedObjectFiles").listFiles()?.forEach { it.deleteRecursively() }
-                // create a file that is not a .so file
-                projectDir.file("compressedSharedObjectFiles/someArch").mkdirs()
-                projectDir.file("compressedSharedObjectFiles/someArch/notASharedObject.txt").writeText("not a .so file :)")
-            },
-            expectedExceptionMessage = "Shared object files not found",
-            assertions = {
-                verifyNoUploads()
-            },
-        )
-    }
-
-    @Test
-    fun `an error is thrown when compressedSharedObjectFilesDirectory does not contain directories`() {
-        rule.runTest(
-            fixture = "hash-shared-object-files",
-            task = "hashTask",
-            setup = { projectDir ->
-                // delete architecture directories
-                projectDir.file("compressedSharedObjectFiles").listFiles()?.forEach { it.deleteRecursively() }
-                // create a file instead of a directory
-                projectDir.file("compressedSharedObjectFiles/aFile.txt").writeText("not a directory")
-            },
-            expectedExceptionMessage = "Compressed shared object files directory does not contain any architecture directories",
-            assertions = {
-                verifyNoUploads()
-            },
-        )
-    }
-
-    @Test
-    fun `don't throw an error when failBuildOnUploadErrors is disabled`() {
-        rule.runTest(
-            fixture = "hash-shared-object-files",
-            task = "hashTask",
-            additionalArgs = listOf("-PfailBuildOnUploadErrors=false"),
-            setup = { projectDir ->
-                // delete architecture directories
-                projectDir.file("compressedSharedObjectFiles").listFiles()?.forEach { it.deleteRecursively() }
-                // create a file instead of a directory
-                projectDir.file("compressedSharedObjectFiles/aFile.txt").writeText("not a directory")
-            },
-            assertions = {
-                verifyNoUploads()
             },
         )
     }

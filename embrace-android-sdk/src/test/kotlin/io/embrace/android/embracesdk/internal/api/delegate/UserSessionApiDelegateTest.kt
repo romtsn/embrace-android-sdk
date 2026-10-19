@@ -1,19 +1,13 @@
 package io.embrace.android.embracesdk.internal.api.delegate
 
-import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import io.embrace.android.embracesdk.PropertyScope
 import io.embrace.android.embracesdk.UserSessionListener
-import io.embrace.android.embracesdk.fakes.FakeInternalLogger
 import io.embrace.android.embracesdk.fakes.FakeSessionOrchestrator
 import io.embrace.android.embracesdk.fakes.FakeUserSessionPropertiesService
-import io.embrace.android.embracesdk.fakes.OtelSdkMode
 import io.embrace.android.embracesdk.fakes.injection.FakeEssentialServiceModule
-import io.embrace.android.embracesdk.fakes.injection.FakeInitModule
 import io.embrace.android.embracesdk.fakes.injection.FakeUserSessionOrchestrationModule
-import io.embrace.android.embracesdk.internal.injection.ModuleInitBootstrapper
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -25,40 +19,17 @@ internal class UserSessionApiDelegateTest {
 
     private lateinit var delegate: UserSessionApiDelegate
     private lateinit var fakeModule: FakeUserSessionOrchestrationModule
-    private lateinit var sdkCallChecker: SdkCallChecker
     private lateinit var userSessionPropertiesService: FakeUserSessionPropertiesService
-    private lateinit var logger: FakeInternalLogger
 
     @Before
     fun setUp() {
         fakeModule = FakeUserSessionOrchestrationModule()
-        val moduleInitBootstrapper = ModuleInitBootstrapper(
-            FakeInitModule(otelSdkMode = OtelSdkMode.COMPAT),
-            essentialServiceModuleSupplier = { _, _, _, _, _, _, _, _, _ ->
-                FakeEssentialServiceModule()
-            },
-            userSessionOrchestrationModuleSupplier = { _, _, _, _, _, _, _, _, _, _, _, _ ->
-                fakeModule
-            },
+        val essentialServiceModule = FakeEssentialServiceModule()
+        userSessionPropertiesService = essentialServiceModule.userSessionPropertiesService
+        delegate = UserSessionApiDelegate(
+            userSessionPropertiesService = userSessionPropertiesService,
+            sessionOrchestrator = fakeModule.sessionOrchestrator,
         )
-        moduleInitBootstrapper.init(ApplicationProvider.getApplicationContext())
-        userSessionPropertiesService =
-            moduleInitBootstrapper.essentialServiceModule.userSessionPropertiesService as FakeUserSessionPropertiesService
-        logger = FakeInternalLogger()
-        sdkCallChecker = SdkCallChecker(logger)
-        sdkCallChecker.started.set(true)
-        delegate = UserSessionApiDelegate(moduleInitBootstrapper, sdkCallChecker)
-    }
-
-    @Test
-    fun `cannot modify session properties when SDK is not enabled`() {
-        logger.throwOnInternalError = false
-        sdkCallChecker.started.set(false)
-        assertFalse(delegate.addUserSessionProperty("test", "value", PropertyScope.USER_SESSION))
-        assertFalse(delegate.removeUserSessionProperty("test"))
-        assertEquals(0, (fakeModule.sessionOrchestrator as FakeSessionOrchestrator).stateChangeCount)
-        delegate.endUserSession()
-        assertEquals(0, (fakeModule.sessionOrchestrator as FakeSessionOrchestrator).manualEndCount)
     }
 
     @Test
@@ -81,17 +52,9 @@ internal class UserSessionApiDelegateTest {
     }
 
     @Test
-    fun `add user session listener when SDK started`() {
+    fun `add user session listener`() {
         delegate.addUserSessionListener { }
         assertEquals(1, (fakeModule.sessionOrchestrator as FakeSessionOrchestrator).userSessionListeners.size)
-    }
-
-    @Test
-    fun `add user session listener when SDK not started`() {
-        logger.throwOnInternalError = false
-        sdkCallChecker.started.set(false)
-        delegate.addUserSessionListener { }
-        assertTrue((fakeModule.sessionOrchestrator as FakeSessionOrchestrator).userSessionListeners.isEmpty())
     }
 
     @Test
@@ -103,17 +66,5 @@ internal class UserSessionApiDelegateTest {
 
         delegate.removeUserSessionListener(listener)
         assertTrue(orchestrator.userSessionListeners.isEmpty())
-    }
-
-    @Test
-    fun `remove user session listener when SDK not started`() {
-        val orchestrator = fakeModule.sessionOrchestrator as FakeSessionOrchestrator
-        val listener = UserSessionListener { }
-        delegate.addUserSessionListener(listener)
-
-        logger.throwOnInternalError = false
-        sdkCallChecker.started.set(false)
-        delegate.removeUserSessionListener(listener)
-        assertEquals(1, orchestrator.userSessionListeners.size)
     }
 }

@@ -5,7 +5,10 @@ import io.embrace.android.embracesdk.internal.arch.CrashTeardownHandler
 import io.embrace.android.embracesdk.internal.arch.datasource.TelemetryDestination
 import io.embrace.android.embracesdk.internal.arch.schema.SchemaType
 import io.embrace.android.embracesdk.internal.arch.schema.TelemetryAttributes
+import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Test
 
 /**
@@ -18,6 +21,13 @@ import org.junit.Test
 internal class EmbraceUncaughtExceptionHandlerTest {
 
     private val logger = FakeInternalLogger(false)
+
+    private val originalHandler = Thread.getDefaultUncaughtExceptionHandler()
+
+    @After
+    fun tearDown() {
+        Thread.setDefaultUncaughtExceptionHandler(originalHandler)
+    }
 
     /**
      * Tests that [EmbraceUncaughtExceptionHandler] accepts a null arg.
@@ -68,6 +78,28 @@ internal class EmbraceUncaughtExceptionHandlerTest {
         assertEquals(testException, defaultHandler.throwable)
     }
 
+    @Test
+    fun `detached handler stops forwarding to the data source but still delegates`() {
+        val defaultHandler = TestUncaughtExceptionHandler()
+        val fakeCrashService = FakeJvmCrashDataSource()
+        val handler = EmbraceUncaughtExceptionHandler(defaultHandler, fakeCrashService, logger)
+        handler.detach()
+        val testException = RuntimeException("Test exception")
+        handler.uncaughtException(Thread.currentThread(), testException)
+
+        assertNull(fakeCrashService.exception)
+        assertEquals(testException, defaultHandler.throwable)
+    }
+
+    @Test
+    fun `detaching leaves a handler that wraps this one installed`() {
+        val handler = EmbraceUncaughtExceptionHandler(TestUncaughtExceptionHandler(), FakeJvmCrashDataSource(), logger)
+        val wrapper = Thread.UncaughtExceptionHandler { thread, throwable -> handler.uncaughtException(thread, throwable) }
+        Thread.setDefaultUncaughtExceptionHandler(wrapper)
+        handler.detach()
+        assertSame(wrapper, Thread.getDefaultUncaughtExceptionHandler())
+    }
+
     internal class CrashingJvmCrashService : JvmCrashDataSource {
         override val instrumentationName: String = "crashing_jvm_crash_service"
 
@@ -81,6 +113,9 @@ internal class EmbraceUncaughtExceptionHandlerTest {
         }
 
         override fun onDataCaptureEnabled() {
+        }
+
+        override fun onDataCaptureDisabled() {
         }
 
         override fun resetDataCaptureLimits() {

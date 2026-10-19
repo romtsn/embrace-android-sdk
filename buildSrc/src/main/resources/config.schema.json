@@ -22,15 +22,22 @@
         "max_length": { "type": "integer", "minimum": 1, "description": "String only." },
         "local": {
           "type": "object",
-          "required": ["type", "sdk"],
+          "required": ["type", "json"],
           "additionalProperties": false,
-          "properties": { "type": { "enum": ["Boolean", "Int", "Long", "String"] }, "sdk": { "type": "string" } }
+          "properties": { "type": { "enum": ["Boolean", "Int", "Long", "String"] }, "json": { "type": "string", "pattern": "^[a-z0-9_]+(\\.[a-z0-9_]+)*$" } }
         },
         "remote": {
           "type": "object",
           "required": ["type", "sdk"],
           "additionalProperties": false,
-          "properties": { "type": { "enum": ["Boolean", "Int", "Long", "String", "Pct"] }, "sdk": { "type": "string" } }
+          "properties": {
+            "type": { "enum": ["Boolean", "Int", "Long", "String", "Pct"] },
+            "sdk": { "type": "string", "pattern": "^\\w+(\\?\\.\\w+)?$" },
+            "parent_type": { "type": "string", "pattern": "^[A-Z]\\w*$", "description": "Type of the RemoteConfig property a nested sdk path reads." }
+          },
+          "if": { "properties": { "sdk": { "pattern": "\\?\\." } } },
+          "then": { "required": ["parent_type"] },
+          "else": { "not": { "required": ["parent_type"] } }
         }
       }
     }

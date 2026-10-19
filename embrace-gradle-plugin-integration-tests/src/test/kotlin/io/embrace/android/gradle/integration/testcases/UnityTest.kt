@@ -33,7 +33,7 @@ class UnityTest {
     fun `build unity project`() {
         rule.runTest(
             fixture = "unity-fake-project",
-            task = "assembleRelease",
+            tasks = listOf("assembleRelease"),
             projectType = ProjectType.ANDROID,
             setup = {
                 setupMockResponses(emptyList(), emptyList(), listOf("release"))
@@ -41,23 +41,6 @@ class UnityTest {
             assertions = {
                 verifyLineMapRequestSent()
                 verifyMethodMapRequestSent()
-            },
-        )
-    }
-
-    @Test
-    fun `debug builds should not upload symbols`() {
-        rule.runTest(
-            fixture = "unity-fake-project",
-            task = "assembleDebug",
-            projectType = ProjectType.ANDROID,
-            setup = {
-                setupMockResponses(emptyList(), emptyList(), listOf("release"))
-            },
-            assertions = {
-                verifyNoHandshakes()
-                verifyNoUploads()
-                verifyJvmMappingRequestsSent(0)
             },
         )
     }

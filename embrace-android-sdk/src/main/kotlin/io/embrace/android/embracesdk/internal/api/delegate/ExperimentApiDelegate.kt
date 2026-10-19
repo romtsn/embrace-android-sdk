@@ -6,51 +6,35 @@ import io.embrace.android.embracesdk.experiments.TrackedFeatureFlag
 import io.embrace.android.embracesdk.internal.api.ExperimentApi
 import io.embrace.android.embracesdk.internal.capture.experiment.ExperimentApiCall
 import io.embrace.android.embracesdk.internal.capture.experiment.ExperimentKind
+import io.embrace.android.embracesdk.internal.capture.experiment.ExperimentTrackingService
 import io.embrace.android.embracesdk.internal.capture.experiment.TrackedData
-import io.embrace.android.embracesdk.internal.injection.ModuleInitBootstrapper
-import io.embrace.android.embracesdk.internal.injection.embraceImplInject
+import io.embrace.android.embracesdk.internal.clock.Clock
 
 internal class ExperimentApiDelegate(
-    bootstrapper: ModuleInitBootstrapper,
-    private val sdkCallChecker: SdkCallChecker,
+    private val clock: Clock,
+    private val experimentTrackingService: Lazy<ExperimentTrackingService>,
 ) : ExperimentApi {
-
-    private val clock by embraceImplInject(sdkCallChecker) {
-        bootstrapper.initModule.clock
-    }
-
-    private val experimentTrackingService by embraceImplInject(sdkCallChecker) {
-        bootstrapper.essentialServiceModule.experimentTrackingService
-    }
 
     override fun createExperiment(id: String, variant: String?, startedAt: Long?): TrackedExperiment =
         TrackedExperimentImpl(id, variant, startedAt)
 
     override fun trackExperiments(experiments: List<TrackedExperiment>) {
-        if (sdkCallChecker.check("track_experiment")) {
-            experimentTrackingService?.track(experiments.toData(ExperimentKind.EXPERIMENT))
-        }
+        experimentTrackingService.value.track(experiments.toData(ExperimentKind.EXPERIMENT))
     }
 
     override fun untrackExperiments(ids: List<String>, endedAt: Long?) {
-        if (sdkCallChecker.check("untrack_experiment")) {
-            experimentTrackingService?.untrack(ExperimentKind.EXPERIMENT, ids, endedAt ?: now())
-        }
+        experimentTrackingService.value.untrack(ExperimentKind.EXPERIMENT, ids, endedAt ?: now())
     }
 
     override fun createFeatureFlag(id: String, variant: String?, startedAt: Long?): TrackedFeatureFlag =
         TrackedFeatureFlagImpl(id, variant, startedAt)
 
     override fun trackFeatureFlags(flags: List<TrackedFeatureFlag>) {
-        if (sdkCallChecker.check("track_feature_flag")) {
-            experimentTrackingService?.track(flags.toData(ExperimentKind.FEATURE_FLAG))
-        }
+        experimentTrackingService.value.track(flags.toData(ExperimentKind.FEATURE_FLAG))
     }
 
     override fun untrackFeatureFlags(ids: List<String>, endedAt: Long?) {
-        if (sdkCallChecker.check("untrack_feature_flag")) {
-            experimentTrackingService?.untrack(ExperimentKind.FEATURE_FLAG, ids, endedAt ?: now())
-        }
+        experimentTrackingService.value.untrack(ExperimentKind.FEATURE_FLAG, ids, endedAt ?: now())
     }
 
     /**
@@ -58,11 +42,11 @@ internal class ExperimentApiDelegate(
      */
     fun replay(calls: List<ExperimentApiCall>) {
         if (calls.isNotEmpty()) {
-            experimentTrackingService?.bulkModify(calls)
+            experimentTrackingService.value.bulkModify(calls)
         }
     }
 
-    private fun now(): Long = clock?.now() ?: System.currentTimeMillis()
+    private fun now(): Long = clock.now()
 
     private fun List<TrackedEntry>.toData(kind: ExperimentKind): List<TrackedData> =
         map { entry ->

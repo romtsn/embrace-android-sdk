@@ -1,52 +1,35 @@
 package io.embrace.android.embracesdk.internal.instrumentation.navigation
 
-import android.app.Activity
+import android.app.Application
 import io.embrace.android.embracesdk.internal.arch.InstrumentationArgs
 import io.embrace.android.embracesdk.internal.arch.datasource.StateDataSource
-import io.embrace.android.embracesdk.internal.arch.navigation.NavigationControllerEventListener
+import io.embrace.android.embracesdk.internal.arch.navigation.CurrentScreen
 import io.embrace.android.embracesdk.internal.arch.schema.SchemaType.NavigationState
 import io.embrace.android.embracesdk.internal.arch.schema.SchemaType.NavigationState.Screen
 import io.embrace.android.embracesdk.internal.arch.schema.SystemStateValue
 
 /**
- * Updates the navigation state by listening to events
+ * Reports the screen published against [CurrentScreen.KEY] as navigation state, knowing nothing about where it was resolved.
  */
 class NavigationStateDataSource(
     private val args: InstrumentationArgs,
+    private val activityCallbacks: Application.ActivityLifecycleCallbacks? = null,
 ) : StateDataSource<Screen>(
     args = args,
     stateTypeFactory = ::NavigationState,
     defaultValue = Screen.Initializing,
     maxTransitions = MAX_NAVIGATION_STATE_TRANSITIONS,
-),
-    NavigationControllerEventListener {
-    private val broker = NavigationEventBroker(
-        onScreenLoad = ::onScreenLoad,
-    )
-
-    private val activityNavigationTracker = ActivityNavigationTracker(
-        clock = args.clock,
-        onEvent = broker::onEvent,
-        navigationTrackingService = args.navigationTrackingService,
-    )
+) {
 
     override fun onDataCaptureEnabled() {
         super.onDataCaptureEnabled()
-        args.navigationTrackingService.navigationControllerEventListener = this
-        args.application.registerActivityLifecycleCallbacks(activityNavigationTracker)
-        args.processStateTracker.addListener(activityNavigationTracker)
+        args.eventBus.addStateHandler(CurrentScreen.KEY) { current ->
+            onStateChange(newState = current.screen, transitionTimeMs = current.sinceMs)
+        }
     }
 
-    override fun onControllerAttached(activity: Activity, timestampMs: Long) {
-        broker.onEvent(NavigationEvent.NavControllerAttached(activity, timestampMs))
-    }
-
-    override fun onDestinationChange(activity: Activity, screenName: String, timestampMs: Long) {
-        broker.onEvent(NavigationEvent.NavControllerDestinationChanged(activity, screenName, timestampMs))
-    }
-
-    fun onScreenLoad(loadTimeMs: Long, screen: Screen) {
-        onStateChange(newState = screen, transitionTimeMs = loadTimeMs)
+    override fun onDataCaptureDisabled() {
+        activityCallbacks?.let(args.application::unregisterActivityLifecycleCallbacks)
     }
 
     override fun outgoingValueAttributes(value: Screen): Map<String, String> {

@@ -1,7 +1,5 @@
 package io.embrace.android.embracesdk.internal.instrumentation.crash.ndk
 
-import androidx.test.core.app.ApplicationProvider
-import androidx.test.ext.junit.runners.AndroidJUnit4
 import io.embrace.android.embracesdk.concurrency.BlockingScheduledExecutorService
 import io.embrace.android.embracesdk.fakes.FakeConfigService
 import io.embrace.android.embracesdk.fakes.FakeInstrumentationArgs
@@ -15,14 +13,13 @@ import io.embrace.android.embracesdk.internal.session.id.SessionIdsSnapshot
 import io.embrace.android.embracesdk.internal.worker.BackgroundWorker
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
-import org.junit.runner.RunWith
 import java.io.File
 import java.nio.file.Files
 
-@RunWith(AndroidJUnit4::class)
 class NativeCrashHandlerInstallerImplTest {
 
     private lateinit var args: FakeInstrumentationArgs
@@ -50,7 +47,6 @@ class NativeCrashHandlerInstallerImplTest {
         executorService = BlockingScheduledExecutorService(blockingMode = false)
 
         args = FakeInstrumentationArgs(
-            ApplicationProvider.getApplicationContext(),
             configService = fakeConfigService,
             logger = FakeInternalLogger(false),
             backgroundWorkerSupplier = { BackgroundWorker(executorService) },
@@ -181,6 +177,38 @@ class NativeCrashHandlerInstallerImplTest {
 
         assertEquals(0, args.logger.internalErrorMessages.size)
         assertFalse(fakeDelegate.signalHandlerInstalled)
+    }
+
+    @Test
+    fun `disable after install stops native crash capture`() {
+        nativeCrashHandlerInstaller.install()
+        assertFalse(fakeDelegate.crashCaptureDisabled)
+        nativeCrashHandlerInstaller.disable()
+        assertTrue(fakeDelegate.crashCaptureDisabled)
+    }
+
+    @Test
+    fun `session changes after disable do not update the report path`() {
+        nativeCrashHandlerInstaller.install()
+        nativeCrashHandlerInstaller.disable()
+        val reportPath = fakeDelegate.reportPath
+
+        sessionPartId = "sid2"
+        userSessionId = "usid2"
+        args.sessionChangeListeners.forEach { it.onPostSessionChange() }
+        assertEquals(reportPath, fakeDelegate.reportPath)
+        assertEquals("null", fakeDelegate.sessionPartId)
+    }
+
+    @Test
+    fun `disable before install prevents signal handlers being installed`() {
+        nativeCrashHandlerInstaller.disable()
+        nativeCrashHandlerInstaller.install()
+
+        assertFalse(fakeDelegate.signalHandlerInstalled)
+        assertFalse(fakeDelegate.signalHandlerReinstalled)
+        assertNull(fakeDelegate.reportPath)
+        assertFalse(fakeDelegate.crashCaptureDisabled)
     }
 
     private fun getFilename(): String = File(checkNotNull(fakeDelegate.reportPath)).name

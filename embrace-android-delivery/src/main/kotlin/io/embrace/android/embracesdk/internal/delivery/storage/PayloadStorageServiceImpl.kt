@@ -22,8 +22,12 @@ class PayloadStorageServiceImpl(
     logger: InternalLogger,
     clock: Clock,
     private val deliveryTracer: DeliveryTracer? = null,
-    storageLimit: Int = 500,
+    storageLimit: Int = DEFAULT_STORAGE_LIMIT,
 ) : PayloadStorageService {
+
+    companion object {
+        const val DEFAULT_STORAGE_LIMIT: Int = 500
+    }
 
     private val fileStorageService: FileStorageService = FileStorageServiceImpl(
         outputDir,
@@ -37,11 +41,12 @@ class PayloadStorageServiceImpl(
      * [SerializationAction] is expected to return bytes that are not compressed, and they will be gzipped before
      * being persisted.
      */
-    override fun store(metadata: StoredTelemetryMetadata, action: SerializationAction) {
-        fileStorageService.store(metadata) { stream ->
+    override fun store(metadata: StoredTelemetryMetadata, action: SerializationAction): StorageOutcome {
+        val outcome = fileStorageService.store(metadata) { stream ->
             GZIPOutputStream(stream).use(action)
         }
         deliveryTracer?.onStore(metadata)
+        return outcome
     }
 
     override fun delete(metadata: StoredTelemetryMetadata, callback: () -> Unit) {

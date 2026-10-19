@@ -1,8 +1,7 @@
 package io.embrace.android.embracesdk.internal.api.delegate
 
 import io.embrace.android.embracesdk.internal.api.OTelApi
-import io.embrace.android.embracesdk.internal.injection.ModuleInitBootstrapper
-import io.opentelemetry.kotlin.NoopOpenTelemetry
+import io.embrace.android.embracesdk.internal.otel.sdk.OtelSdkWrapper
 import io.opentelemetry.kotlin.OpenTelemetry
 import io.opentelemetry.kotlin.logging.export.LogRecordExporter
 import io.opentelemetry.kotlin.logging.export.LogRecordProcessor
@@ -10,52 +9,24 @@ import io.opentelemetry.kotlin.tracing.export.SpanExporter
 import io.opentelemetry.kotlin.tracing.export.SpanProcessor
 
 internal class OTelApiDelegate(
-    private val bootstrapper: ModuleInitBootstrapper,
-    private val sdkCallChecker: SdkCallChecker,
+    private val otelSdkWrapper: Lazy<OtelSdkWrapper>,
 ) : OTelApi {
 
     override fun addSpanExporter(spanExporter: SpanExporter) {
-        if (sdkCallChecker.started.get()) {
-            return
-        }
-        bootstrapper.openTelemetryModule.otelSdkConfig.addSpanExporter(spanExporter)
     }
 
     override fun addSpanProcessor(spanProcessor: SpanProcessor) {
-        if (sdkCallChecker.started.get()) {
-            return
-        }
-        bootstrapper.openTelemetryModule.otelSdkConfig.addSpanProcessor(spanProcessor)
     }
 
     override fun addLogRecordExporter(logRecordExporter: LogRecordExporter) {
-        if (sdkCallChecker.started.get()) {
-            return
-        }
-        bootstrapper.openTelemetryModule.otelSdkConfig.addLogExporter(logRecordExporter)
     }
 
     override fun addLogRecordProcessor(logRecordProcessor: LogRecordProcessor) {
-        if (sdkCallChecker.started.get()) {
-            return
-        }
-        bootstrapper.openTelemetryModule.otelSdkConfig.addLogRecordProcessor(logRecordProcessor)
     }
 
     override fun setResourceAttribute(key: String, value: String) {
-        if (sdkCallChecker.started.get()) {
-            return
-        }
-        bootstrapper.openTelemetryModule.otelSdkConfig.setResourceAttribute(key, value)
     }
 
-    private val openTelemetryKotlin = LateBindingOpenTelemetry {
-        if (sdkCallChecker.started.get()) {
-            bootstrapper.openTelemetryModule.otelSdkWrapper.openTelemetryKotlin
-        } else {
-            NoopOpenTelemetry
-        }
-    }
-
-    override fun getOpenTelemetryKotlin(): OpenTelemetry = openTelemetryKotlin
+    override fun getOpenTelemetryKotlin(): OpenTelemetry =
+        otelSdkWrapper.value.openTelemetryKotlin
 }

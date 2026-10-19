@@ -1,11 +1,12 @@
 package io.embrace.android.embracesdk.internal.config.resolved
 
+import io.embrace.android.embracesdk.internal.config.instrumented.PersistenceLocalConfigImpl
 import io.embrace.android.embracesdk.internal.config.instrumented.schema.InstrumentedConfig
 import io.embrace.android.embracesdk.internal.config.remote.RemoteConfig
 
 fun resolveConfig(local: InstrumentedConfig, remote: RemoteConfig?, bucket: Lazy<Float>): EmbraceConfig = EmbraceConfig(
     breadcrumb = { resolveBreadcrumb(local, remote) },
-    persistence = { resolvePersistence(local, remote, bucket) },
+    persistence = { resolvePersistence(PersistenceLocalConfigImpl, remote, bucket) },
     threadBlockage = { resolveThreadBlockage(remote, bucket) },
     aei = { resolveAei(local, remote, bucket) },
     log = { resolveLog(remote) },
@@ -55,16 +56,6 @@ fun resolveAei(local: InstrumentedConfig, remote: RemoteConfig?, bucket: Lazy<Fl
         },
         traceMaxLimit = { cfg?.appExitInfoTracesLimit },
         maxNum = { cfg?.aeiMaxNum },
-    )
-}
-
-fun resolveLog(remote: RemoteConfig?): LogConfig {
-    val cfg = remote?.logConfig
-    return LogConfig(
-        maxMessageLength = { cfg?.logMessageMaximumAllowedLength },
-        infoLimit = { cfg?.logInfoLimit },
-        warnLimit = { cfg?.logWarnLimit },
-        errorLimit = { cfg?.logErrorLimit },
     )
 }
 

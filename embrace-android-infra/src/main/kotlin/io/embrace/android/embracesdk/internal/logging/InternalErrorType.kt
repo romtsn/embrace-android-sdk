@@ -46,10 +46,12 @@ sealed class InternalErrorType(private val severity: Severity) {
     object CompletedSpansWriteFail : InternalErrorType(ERROR)
     object SpanSnapshotsWriteFail : InternalErrorType(ERROR)
     object InternalInterfaceFail : InternalErrorType(ERROR)
+    object PublicApiFail : InternalErrorType(ERROR)
     object NativeReadFail : InternalErrorType(Severity.WARNING)
     object AppLaunchTraceFail : InternalErrorType(Severity.WARNING)
     object UiCallbackFail : InternalErrorType(ERROR)
     object InstrumentationRegFail : InternalErrorType(ERROR)
+    object InstrumentationDisableFail : InternalErrorType(ERROR)
     object UrlStreamHandlerFactoryInstallFail : InternalErrorType(ERROR)
     object SessionStateCreationFail : InternalErrorType(ERROR)
     object ConnectivityUpdateFailure : InternalErrorType(ERROR)
@@ -61,4 +63,5 @@ sealed class InternalErrorType(private val severity: Severity) {
     object SdkInitPhaseFail : InternalErrorType(ERROR)
     object SdkInitAttributeCaptureFail : InternalErrorType(ERROR)
     object OtelSdkCodeError : InternalErrorType(ERROR)
+    object EventBusHandlerFail : InternalErrorType(ERROR)
 }
