@@ -10,10 +10,11 @@ import io.embrace.android.embracesdk.fakes.OtelSdkMode
 import io.embrace.android.embracesdk.fakes.config.FakeBaseUrlConfig
 import io.embrace.android.embracesdk.fakes.config.FakeEnabledFeatureConfig
 import io.embrace.android.embracesdk.fakes.config.FakeInstrumentedConfig
-import io.embrace.android.embracesdk.internal.injection.BootstrapServices
-import io.embrace.android.embracesdk.internal.injection.InitModule
-import io.embrace.android.embracesdk.internal.injection.InitModuleImpl
-import io.embrace.android.embracesdk.internal.injection.InitializedModuleGraph
+import io.embrace.android.embracesdk.internal.config.PersistedConfig
+import io.embrace.android.embracesdk.internal.injection.ConfigLoadServices
+import io.embrace.android.embracesdk.internal.injection.SdkOverrides
+import io.embrace.android.embracesdk.internal.otel.sdk.OtelSdkWrapper
+import io.embrace.android.embracesdk.internal.injection.PreStartServices
 import io.embrace.android.embracesdk.internal.instance.SdkStateHolder
 import io.embrace.android.embracesdk.internal.instance.createSdkStateHolder
 import io.embrace.android.embracesdk.internal.worker.Worker
@@ -53,7 +54,8 @@ internal class StrictModeStartupTest(
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val context = ApplicationProvider.getApplicationContext<Context>()
     private val recorder = StrictModeRecorder()
-    private var moduleGraph: InitializedModuleGraph? = null
+    private var configLoadServices: ConfigLoadServices? = null
+    private var otelSdkWrapper: OtelSdkWrapper? = null
     private lateinit var sdkStateHolder: SdkStateHolder
 
     @Before
@@ -72,23 +74,28 @@ internal class StrictModeStartupTest(
             recorder.install()
 
             sdkStateHolder = createSdkStateHolder(
-                bootstrapServices = BootstrapServices(),
-                moduleGraphSupplier = { ctx, bootstrapServices, buffer ->
-                    InitializedModuleGraph(
+                preStartServices = PreStartServices(),
+                configLoadServicesSupplier = { ctx, preStartServices ->
+                    ConfigLoadServices(
                         context = ctx,
-                        bootstrapServices = bootstrapServices,
-                        buffer = buffer,
-                        initModuleSupplier = { TestInitModule(InitModuleImpl(it), otelSdkMode) },
-                    )
+                        preStartServices = preStartServices,
+                        instrumentedConfig = FakeInstrumentedConfig(
+                            enabledFeatures = FakeEnabledFeatureConfig(otelKotlinSdkEnabled = otelSdkMode.useKotlinSdk),
+                            baseUrls = FakeBaseUrlConfig(
+                                configImpl = "http://localhost:1",
+                                dataImpl = "http://localhost:1",
+                            ),
+                        ),
+                    ).also { configLoadServices = it }
                 },
-                onModuleGraphCreated = { moduleGraph = it },
+                overrides = SdkOverrides(otelSdkWrapper = { real -> real().also { otelSdkWrapper = it } }),
             )
             sdkStateHolder.api.start(context)
         }
 
         drainInitWork()
         assertTrue("SDK did not start.", sdkStateHolder.api.isStarted)
-        assertEquals(otelSdkMode.useKotlinSdk, checkNotNull(moduleGraph).openTelemetryModule.otelSdkWrapper.useKotlinSdk)
+        assertEquals(otelSdkMode.useKotlinSdk, checkNotNull(otelSdkWrapper).useKotlinSdk)
         assertNoUnexpectedViolations(recorder.violations())
     }
 
@@ -100,7 +107,7 @@ internal class StrictModeStartupTest(
         repeat(2) {
             BACKGROUND_WORKERS.forEach { worker ->
                 runCatching {
-                    checkNotNull(moduleGraph).workerThreadModule.backgroundWorker(worker).submit {}.get(DRAIN_TIMEOUT_MS, MILLISECONDS)
+                    checkNotNull(configLoadServices).workerThreadPool.backgroundWorker(worker).submit {}.get(DRAIN_TIMEOUT_MS, MILLISECONDS)
                 }
             }
             instrumentation.waitForIdleSync()
@@ -120,7 +127,7 @@ internal class StrictModeStartupTest(
         File(context.applicationInfo.dataDir, "shared_prefs").deleteRecursively()
 
         assertFalse(
-            File(context.filesDir, "embrace_remote_config").exists(),
+            File(context.filesDir, PersistedConfig.STORAGE_DIR_NAME).exists(),
         )
     }
 
@@ -133,17 +140,4 @@ internal class StrictModeStartupTest(
         @Parameterized.Parameters(name = "{0}")
         fun modes(): List<Array<Any>> = OtelSdkMode.parameters()
     }
-}
-
-private class TestInitModule(
-    base: InitModule,
-    otelSdkMode: OtelSdkMode,
-) : InitModule by base {
-    override val instrumentedConfig = FakeInstrumentedConfig(
-        enabledFeatures = FakeEnabledFeatureConfig(otelKotlinSdkEnabled = otelSdkMode.useKotlinSdk),
-        baseUrls = FakeBaseUrlConfig(
-            configImpl = "http://localhost:1",
-            dataImpl = "http://localhost:1",
-        ),
-    )
 }

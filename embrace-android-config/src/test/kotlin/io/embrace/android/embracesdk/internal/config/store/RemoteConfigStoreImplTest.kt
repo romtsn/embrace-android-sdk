@@ -2,6 +2,7 @@ package io.embrace.android.embracesdk.internal.config.store
 
 import io.embrace.android.embracesdk.fakes.FakeThrowingSerializer
 import io.embrace.android.embracesdk.fakes.TestPlatformSerializer
+import io.embrace.android.embracesdk.internal.config.PersistedConfig
 import io.embrace.android.embracesdk.internal.config.remote.RemoteConfig
 import io.embrace.android.embracesdk.internal.config.source.ConfigHttpResponse
 import org.junit.Assert.assertEquals
@@ -30,9 +31,9 @@ internal class RemoteConfigStoreImplTest {
         val emptyDir = Files.createTempDirectory("empty").toFile()
         RemoteConfigStoreImpl(TestPlatformSerializer(), emptyDir) { deviceId }
 
-        assertFalse(File(emptyDir, "most_recent_response").exists())
-        assertFalse(File(emptyDir, "etag").exists())
-        assertFalse(File(emptyDir, "cached_config").exists())
+        assertFalse(File(emptyDir, PersistedConfig.CONFIG_RESPONSE_FILE_NAME).exists())
+        assertFalse(File(emptyDir, PersistedConfig.ETAG_FILE_NAME).exists())
+        assertFalse(File(emptyDir, PersistedConfig.CACHED_CONFIG_FILE_NAME).exists())
     }
 
     @Test
@@ -103,6 +104,17 @@ internal class RemoteConfigStoreImplTest {
     }
 
     @Test
+    fun `json fallback has no etag`() {
+        val config = RemoteConfig(50)
+        store.saveResponse(ConfigHttpResponse(config, "etag"))
+        cachedConfigFile().delete()
+
+        val loaded = checkNotNull(store.loadResponse())
+        assertEquals(config, loaded.cfg)
+        assertNull(loaded.etag)
+    }
+
+    @Test
     fun `json fallback has no delivered at`() {
         val config = RemoteConfig(50)
         store.saveResponse(ConfigHttpResponse(config, "etag"))
@@ -124,7 +136,7 @@ internal class RemoteConfigStoreImplTest {
 
         val loaded = checkNotNull(store.loadResponse())
         assertEquals(config, loaded.cfg)
-        assertEquals("etag", loaded.etag)
+        assertNull(loaded.etag)
         // device id is only sourced from the binary fast-path, so the fallback omits it
         assertNull(loaded.deviceId)
     }
@@ -228,13 +240,13 @@ internal class RemoteConfigStoreImplTest {
         // ...but the json fallback was written successfully and still loads
         val loaded = checkNotNull(store.loadResponse())
         assertEquals(config, loaded.cfg)
-        assertEquals("etag", loaded.etag)
+        assertNull(loaded.etag)
         assertNull(loaded.deviceId)
     }
 
-    private fun cachedConfigFile() = File(dir, "cached_config")
+    private fun cachedConfigFile() = File(dir, PersistedConfig.CACHED_CONFIG_FILE_NAME)
 
-    private fun configFile() = File(dir, "most_recent_response")
+    private fun configFile() = File(dir, PersistedConfig.CONFIG_RESPONSE_FILE_NAME)
 
-    private fun etagFile() = File(dir, "etag")
+    private fun etagFile() = File(dir, PersistedConfig.ETAG_FILE_NAME)
 }

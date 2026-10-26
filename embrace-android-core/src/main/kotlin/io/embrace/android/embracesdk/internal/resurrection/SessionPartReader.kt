@@ -6,8 +6,9 @@ import io.embrace.android.embracesdk.internal.delivery.StoredTelemetryMetadata
 import io.embrace.android.embracesdk.internal.delivery.SupportedEnvelopeType
 import io.embrace.android.embracesdk.internal.delivery.intake.IntakeResult
 import io.embrace.android.embracesdk.internal.delivery.intake.IntakeService
-import io.embrace.android.embracesdk.internal.logging.InternalErrorType
-import io.embrace.android.embracesdk.internal.logging.InternalLogger
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
+import io.embrace.android.embracesdk.internal.logging.guardSdkCode
 import io.embrace.android.embracesdk.internal.otel.sdk.findAttributeValue
 import io.embrace.android.embracesdk.internal.payload.Envelope
 import io.embrace.android.embracesdk.internal.payload.SessionPartPayload
@@ -50,15 +51,15 @@ import java.util.concurrent.TimeoutException
  * up by any subsquent pass because it is just a regular, completed session part to be delivered.
  */
 class SessionPartReader(
-    private val sessionsDir: Lazy<File>,
-    private val directoryStore: SessionPartDirectoryStore,
+    internal val sessionsDir: Lazy<File>,
+    internal val directoryStore: SessionPartDirectoryStore,
     private val reconstructionService: SessionReconstructionService,
     private val intakeService: IntakeService,
-    private val writeTracker: SessionPartWriteTracker,
+    internal val writeTracker: SessionPartWriteTracker,
     private val deadPartResurrector: MultiFileDeadPartResurrector,
     private val processIdProvider: () -> String,
     private val configService: ConfigService,
-    private val logger: InternalLogger,
+    private val errorHandler: ErrorHandler,
 ) {
     /**
      * The session parts whose intake attempt has failed at least once.
@@ -89,7 +90,7 @@ class SessionPartReader(
             return
         }
         EmbTrace.trace("mf-read-session-parts") {
-            runCatching {
+            errorHandler.guardSdkCode(SdkErrorType.SessionPartReadFail) {
                 val stored = directoryStore.storedDirectories()
 
                 // Forget failed and incomplete parts that have since left the disk some other way, so these only hold
@@ -110,22 +111,18 @@ class SessionPartReader(
                     .mapNotNullTo(HashSet()) { parts -> parts.maxWithOrNull(SessionPartDirectory.comparator) }
 
                 for (directory in directories) {
-                    val proceed = runCatching {
+                    val proceed = errorHandler.guardSdkCode(SdkErrorType.SessionPartReadFail, true) {
                         deliver(
                             directory = directory,
                             isLastPartOfUserSession = directory in lastPartsOfUserSessions,
                             performingResurrection = performingResurrection,
                         )
-                    }.onFailure {
-                        logger.trackInternalError(InternalErrorType.SessionPartReadFail, it)
-                    }.getOrDefault(true)
+                    }
 
                     if (!proceed) {
                         break
                     }
                 }
-            }.onFailure {
-                logger.trackInternalError(InternalErrorType.SessionPartReadFail, it)
             }
         }
     }
@@ -135,16 +132,14 @@ class SessionPartReader(
      * delivered yet.
      */
     fun storedSessionPartIds(): Set<String> =
-        runCatching {
+        errorHandler.guardSdkCode(SdkErrorType.SessionPartReadFail, emptySet()) {
             directoryStore.storedDirectories().mapTo(HashSet(), SessionPartDirectory::sessionPartId)
-        }.getOrDefault(emptySet())
+        }
 
     private fun deletePersistedSessionParts() {
         EmbTrace.trace("mf-delete-session-parts") {
-            runCatching {
+            errorHandler.guardSdkCode(SdkErrorType.SessionPartReadFail) {
                 sessionsDir.value.deleteRecursively()
-            }.onFailure {
-                logger.trackInternalError(InternalErrorType.SessionPartReadFail, it)
             }
         }
     }
@@ -193,7 +188,7 @@ class SessionPartReader(
         val result = try {
             intake.task.get(INTAKE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         } catch (exc: TimeoutException) {
-            logger.trackInternalError(InternalErrorType.IntakeFail, exc)
+            errorHandler.trackSdkError(SdkErrorType.IntakeFail, exc)
             return if (intake.timedOut) {
                 // The intake has already timed out once, so stop blocking newer parts on it. Cancel it
                 // first, so that one still queued can't store the part after newer parts. One already
@@ -254,17 +249,15 @@ class SessionPartReader(
      */
     private fun runAfterStored(intake: PendingIntake, result: IntakeResult) {
         if (result == IntakeResult.STORED) {
-            runCatching(intake.afterStored).onFailure {
-                logger.trackInternalError(InternalErrorType.PayloadResurrectionPayloadFail, it)
-            }
+            errorHandler.guardSdkCode(SdkErrorType.PayloadResurrectionPayloadFail, intake.afterStored)
         }
     }
 
     private fun deleteSessionPartData(directory: SessionPartDirectory, reason: String) {
         failed.remove(directory)
         directoryStore.delete(directory)
-        logger.trackInternalError(
-            InternalErrorType.SessionPartReadFail,
+        errorHandler.trackSdkError(
+            SdkErrorType.SessionPartReadFail,
             IllegalStateException("Session part data deleted: $reason"),
         )
     }
@@ -309,7 +302,7 @@ class SessionPartReader(
         isLastPartOfUserSession: Boolean,
         lastWrittenMs: Long?,
     ): MultiFileDeadPartResurrector.ResurrectedPart? {
-        val resurrected = runCatching {
+        val resurrected = errorHandler.guardSdkCode(SdkErrorType.PayloadResurrectionPayloadFail, null) {
             deadPartResurrector.resurrect(
                 deadPart = deadPart,
                 directory = directory,
@@ -317,9 +310,7 @@ class SessionPartReader(
                 isLastPartOfUserSession = isLastPartOfUserSession,
                 lastWrittenMs = lastWrittenMs,
             )
-        }.onFailure {
-            logger.trackInternalError(InternalErrorType.PayloadResurrectionPayloadFail, it)
-        }.getOrNull()
+        }
         if (resurrected == null) {
             deleteSessionPartData(directory, "dead session part could not be resurrected")
         }

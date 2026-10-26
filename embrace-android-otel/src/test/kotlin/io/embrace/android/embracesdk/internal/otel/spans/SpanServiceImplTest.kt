@@ -6,7 +6,7 @@ import io.embrace.android.embracesdk.assertions.assertIsType
 import io.embrace.android.embracesdk.assertions.assertIsTypePerformance
 import io.embrace.android.embracesdk.assertions.assertNotPrivateSpan
 import io.embrace.android.embracesdk.fakes.FakeClock
-import io.embrace.android.embracesdk.fakes.FakeInternalLogger
+import io.embrace.android.embracesdk.fakes.FakeErrorHandler
 import io.embrace.android.embracesdk.fakes.FakeInternalTelemetryService
 import io.embrace.android.embracesdk.fakes.FakeOtelKotlinClock
 import io.embrace.android.embracesdk.fakes.FakeSessionIdsProvider
@@ -34,6 +34,7 @@ import io.embrace.android.embracesdk.internal.arch.schema.EmbType
 import io.embrace.android.embracesdk.internal.clock.millisToNanos
 import io.embrace.android.embracesdk.internal.clock.nanosToMillis
 import io.embrace.android.embracesdk.internal.otel.config.OtelSdkConfig
+import io.embrace.android.embracesdk.internal.otel.export.immediateExportDispatcher
 import io.embrace.android.embracesdk.internal.otel.logs.LogSinkImpl
 import io.embrace.android.embracesdk.internal.otel.payload.toEmbracePayload
 import io.embrace.android.embracesdk.internal.otel.sdk.DataValidator
@@ -54,9 +55,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.robolectric.ParameterizedRobolectricTestRunner
+import org.junit.runners.Parameterized
 
-@RunWith(ParameterizedRobolectricTestRunner::class)
+@RunWith(Parameterized::class)
 internal class SpanServiceImplTest(
     private val otelSdkMode: OtelSdkMode,
 ) {
@@ -69,7 +70,7 @@ internal class SpanServiceImplTest(
 
     @Before
     fun setup() {
-        spanRepository = SpanRepository()
+        spanRepository = SpanRepository(FakeErrorHandler())
         dataValidator = DataValidator(telemetryService = FakeInternalTelemetryService())
         spansService = createSpanService(dataValidator)
     }
@@ -289,8 +290,8 @@ internal class SpanServiceImplTest(
             assertTrue(
                 spansService.recordCompletedSpan(
                     name = "test${errorCode.name}",
-                    startTimeMs = 0,
-                    endTimeMs = 1,
+                    startTimeMs = clock.now(),
+                    endTimeMs = clock.now() + 1,
                     errorCode = errorCode.toErrorCodeAttribute(),
                 ),
             )
@@ -708,12 +709,13 @@ internal class SpanServiceImplTest(
             uuidSource = TestUuidSource(),
             sessionIdsProvider = { FakeSessionIdsProvider(userSessionId = "fake-session-id") },
             processIdentifierProvider = { "fake-pid" },
+            externalExportDispatcher = immediateExportDispatcher(),
         )
         val otelSdkWrapper = OtelSdkWrapper(
             otelClock = otelClock,
             configuration = otelSdkConfig,
             spanServiceProvider = ::FakeSpanService,
-            errorHandler = FakeInternalLogger(),
+            errorHandler = FakeErrorHandler(),
             useKotlinSdk = otelSdkMode.useKotlinSdk,
         )
         val embraceSpanFactory = EmbraceSpanFactoryImpl(
@@ -721,6 +723,7 @@ internal class SpanServiceImplTest(
             spanRepository = spanRepository,
             dataValidator = dataValidator,
             telemetryService = FakeInternalTelemetryService(),
+            errorHandler = FakeErrorHandler(),
         )
 
         return SpanServiceImpl(
@@ -747,7 +750,7 @@ internal class SpanServiceImplTest(
 
     companion object {
         @JvmStatic
-        @ParameterizedRobolectricTestRunner.Parameters(name = "{0}")
+        @Parameterized.Parameters(name = "{0}")
         fun modes(): List<Array<Any>> = OtelSdkMode.parameters()
     }
 }

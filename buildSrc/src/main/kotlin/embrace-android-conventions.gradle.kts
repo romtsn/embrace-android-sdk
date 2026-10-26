@@ -1,5 +1,6 @@
 import com.android.build.api.variant.DeviceTestBuilder
 import org.gradle.api.tasks.testing.logging.TestExceptionFormat
+import org.gradle.api.tasks.testing.logging.TestLogEvent
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.dsl.KotlinVersion
 
@@ -27,6 +28,7 @@ android {
         checkAllWarnings = true
         ignoreTestSources = true
         htmlReport = false
+        quiet = true
         baseline = project.file("lint-baseline.xml")
         disable.addAll(setOf("GradleDependency", "NewerVersionAvailable", "AndroidGradlePluginVersion"))
     }
@@ -38,15 +40,26 @@ android {
         // Calling Android logging methods will throw exceptions if this is false
         // see: http://tools.android.com/tech-docs/unit-testing-support#TOC-Method-...-not-mocked.-
         unitTests.isReturnDefaultValues = true
-        unitTests.isIncludeAndroidResources = true
 
         unitTests {
             all { test ->
                 test.testLogging {
                     this.exceptionFormat = TestExceptionFormat.FULL
+                    // CI runs with --warn, so failures must also be logged at warn level to appear in the output
+                    warn {
+                        events(TestLogEvent.FAILED)
+                        exceptionFormat = TestExceptionFormat.FULL
+                    }
                 }
                 test.maxParallelForks = forkCount
                 test.maxHeapSize = heapSize
+                // Test forks are short-lived, so C2 compilation costs more than it saves
+                test.jvmArgs("-XX:TieredStopAtLevel=1")
+                // Avoids a JVM warning per test fork when mockk's agent appends to the bootstrap classpath
+                test.jvmArgs("-Xshare:off")
+                // Robolectric needs this to emulate SDK 36+
+                test.jvmArgs("--add-opens=java.base/jdk.internal.access=ALL-UNNAMED")
+                test.timeout.set(TEST_TASK_TIMEOUT)
 
                 // Disable test discovery failure for modules without test sources
                 test.failOnNoDiscoveredTests.set(false)

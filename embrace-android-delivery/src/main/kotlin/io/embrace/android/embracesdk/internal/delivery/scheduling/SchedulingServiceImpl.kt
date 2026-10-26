@@ -10,8 +10,9 @@ import io.embrace.android.embracesdk.internal.delivery.execution.ExecutionResult
 import io.embrace.android.embracesdk.internal.delivery.execution.RequestExecutionService
 import io.embrace.android.embracesdk.internal.delivery.storage.PayloadStorageService
 import io.embrace.android.embracesdk.internal.delivery.storedTelemetryComparator
-import io.embrace.android.embracesdk.internal.logging.InternalErrorType
-import io.embrace.android.embracesdk.internal.logging.InternalLogger
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
+import io.embrace.android.embracesdk.internal.logging.guardSdkCode
 import io.embrace.android.embracesdk.internal.worker.BackgroundWorker
 import java.io.IOException
 import java.io.InputStream
@@ -33,7 +34,7 @@ class SchedulingServiceImpl(
     private val schedulingWorker: BackgroundWorker,
     private val deliveryWorker: BackgroundWorker,
     private val clock: Clock,
-    private val logger: InternalLogger,
+    private val errorHandler: ErrorHandler,
     private val deliveryTracer: DeliveryTracer? = null,
     private val maxPayloadBytes: Long = MAX_UPLOAD_PAYLOAD_BYTES,
 ) : SchedulingService {
@@ -46,6 +47,7 @@ class SchedulingServiceImpl(
     private val resurrectionComplete = AtomicBoolean(false)
     private val payloadsInProgress = ConcurrentHashMap<SupportedEnvelopeType, StoredTelemetryMetadata>()
     private val intakeDeliveryPending = AtomicBoolean(false)
+    private val stopped = AtomicBoolean(false)
     private val scheduledDeliveryAttempt: ScheduledDeliveryAttempt = ScheduledDeliveryAttempt(
         clock = clock,
         scheduleAction = ::queueDeliveryAttempt,
@@ -71,7 +73,9 @@ class SchedulingServiceImpl(
 
     override fun shutdown() {
         // shutdown workers from further scheduling but don't wait for completion as
-        // we can just retry in the next process
+        // we can just retry in the next process. Deliveries already queued on the worker
+        // still run after shutdown, so they check this flag and skip the request.
+        stopped.set(true)
         schedulingWorker.shutdownAndWait(0)
         deliveryWorker.shutdownAndWait(0)
     }
@@ -125,7 +129,7 @@ class SchedulingServiceImpl(
      * Find the next eligible payload with the highest priority and attempt to deliver it if the connection is ready.
      */
     private fun findAndDeliverNextPayload() {
-        try {
+        errorHandler.guardSdkCode(SdkErrorType.DeliverySchedulingFail) {
             connectionStatus.unblockIfWaitTimeExceeded(clock.now())
             if (connectionStatus.ready()) {
                 findNextPayload()?.let { payload ->
@@ -134,8 +138,6 @@ class SchedulingServiceImpl(
                     executeDelivery(payload)
                 }
             }
-        } catch (t: Throwable) {
-            logger.trackInternalError(InternalErrorType.DeliverySchedulingFail, t)
         }
     }
 
@@ -177,6 +179,9 @@ class SchedulingServiceImpl(
         deliveryTracer?.onExecuteDelivery(payload)
         activeSends.add(payload)
         deliveryWorker.submit {
+            if (stopped.get()) {
+                return@submit
+            }
             val result: ExecutionResult = attemptDelivery(payload)
 
             // Block the connection right away to prevent future delivery if the request just run dictates that
@@ -201,20 +206,20 @@ class SchedulingServiceImpl(
      * as the request body verbatim, so an oversized file is an oversized request.
      */
     private fun attemptDelivery(payload: StoredTelemetryMetadata): ExecutionResult {
-        if (!connectionStatus.ready()) {
-            return ExecutionResult.NetworkNotReady
-        }
-
-        val sizeBytes = storageService.payloadSizeBytes(payload)
-        if (sizeBytes > maxPayloadBytes) {
-            logger.trackInternalError(
-                type = InternalErrorType.PayloadDeliveryFail,
-                throwable = IOException("$OVERSIZED_UPLOAD_MSG: $sizeBytes bytes"),
-            )
-            return ExecutionResult.PayloadTooLarge(sizeBytes)
-        }
-
         return try {
+            if (!connectionStatus.ready()) {
+                return ExecutionResult.NetworkNotReady
+            }
+
+            val sizeBytes = storageService.payloadSizeBytes(payload)
+            if (sizeBytes > maxPayloadBytes) {
+                errorHandler.trackSdkError(
+                    type = SdkErrorType.PayloadDeliveryFail,
+                    throwable = IOException("$OVERSIZED_UPLOAD_MSG: $sizeBytes bytes"),
+                )
+                return ExecutionResult.PayloadTooLarge(sizeBytes)
+            }
+
             payload.toStream()?.use { stream ->
                 executionService.attemptHttpRequest(
                     payloadStream = { stream },
@@ -223,15 +228,42 @@ class SchedulingServiceImpl(
                 )
             } ?: ExecutionResult.NotAttempted
         } catch (t: Throwable) {
-            logger.trackInternalError(InternalErrorType.DeliverySchedulingFail, t)
+            errorHandler.trackSdkError(SdkErrorType.DeliverySchedulingFail, t)
             ExecutionResult.Incomplete(exception = t, retry = false)
         }
     }
 
     /**
-     * Schedule future deliveries based on the latest delivery execution
+     * Schedule future deliveries based on the latest delivery execution.
+     *
+     * The payload's in-progress state is released even if recording the result fails, otherwise all
+     * payloads of this envelope type would never be delivered again in this process.
      */
     private fun ExecutionResult.processDeliveryResult(
+        payload: StoredTelemetryMetadata,
+    ) {
+        errorHandler.guardSdkCode(SdkErrorType.DeliverySchedulingFail) {
+            recordDeliveryResult(payload)
+        }
+
+        // remove any payloads that should not be retried to unblock other payloads of the same type
+        if (!shouldRetry) {
+            payloadsInProgress.remove(payload.envelopeType)
+        }
+
+        findAndDeliverNextPayload()
+        errorHandler.guardSdkCode(SdkErrorType.DeliverySchedulingFail) {
+            payloadsToRetry.values.minOfOrNull { it.nextRetryTimeMs }?.let { retryTimeMs ->
+                scheduleFutureDeliveryAttempt(maxOf(retryTimeMs, connectionStatus.getUnblockTime()))
+            }
+        }
+        activeSends.remove(payload)
+    }
+
+    /**
+     * Update connection, retry, and storage state from the latest delivery execution
+     */
+    private fun ExecutionResult.recordDeliveryResult(
         payload: StoredTelemetryMetadata,
     ) {
         // If the request failed because the SDK cannot reach the Embrace server, schedule a delivery for when the connection unblocks.
@@ -277,23 +309,6 @@ class SchedulingServiceImpl(
                 nextRetryTimeMs = nextRetryTimeMs,
             )
         }
-
-        // Any payload that will not be retried is either sent or deleted, so it should no longer considered to be in progress.
-        // If it should be retried, leave the payload as being in progress so no other payloads of the same type will be scheduled.
-        if (!shouldRetry) {
-            payloadsInProgress.remove(payload.envelopeType)
-        }
-
-        /**
-         * Always try to send the next payload and schedule the next retry or connection unblocking, whichever happens later.
-         * This is fulfilling the promise made in [onPayloadIntake] so that any debounced intake will not result in a
-         * new payload intake being ignored.
-         */
-        findAndDeliverNextPayload()
-        payloadsToRetry.values.minOfOrNull { it.nextRetryTimeMs }?.let { retryTimeMs ->
-            scheduleFutureDeliveryAttempt(maxOf(retryTimeMs, connectionStatus.getUnblockTime()))
-        }
-        activeSends.remove(payload)
     }
 
     /**

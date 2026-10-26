@@ -2,13 +2,14 @@ package io.embrace.android.embracesdk.internal.api
 
 import io.embrace.android.embracesdk.fakes.FakeConfigService
 import io.embrace.android.embracesdk.fakes.FakeEnvelopeResourceSource
-import io.embrace.android.embracesdk.fakes.FakeInternalLogger
+import io.embrace.android.embracesdk.fakes.FakeErrorHandler
 import io.embrace.android.embracesdk.fakes.FakeInternalTelemetryService
 import io.embrace.android.embracesdk.fakes.FakeKeyValueStore
+import io.embrace.android.embracesdk.fakes.fakeContext
+import io.embrace.android.embracesdk.fakes.unimplemented
 import io.embrace.android.embracesdk.internal.api.delegate.HostedSdkInternalInterfaceImpl
 import io.embrace.android.embracesdk.internal.envelope.metadata.FlutterSdkVersionInfo
-import io.embrace.android.embracesdk.internal.logging.InternalErrorType
-import io.mockk.mockk
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Before
@@ -17,22 +18,22 @@ import org.junit.Test
 internal class HostedSdkInternalInterfaceImplTest {
 
     private lateinit var telemetryService: FakeInternalTelemetryService
-    private lateinit var logger: FakeInternalLogger
+    private lateinit var errorHandler: FakeErrorHandler
     private lateinit var impl: HostedSdkInternalInterfaceImpl
 
     @Before
     fun setUp() {
         telemetryService = FakeInternalTelemetryService()
-        logger = FakeInternalLogger(throwOnInternalError = false)
+        errorHandler = FakeErrorHandler(throwOnSdkError = false)
         impl = HostedSdkInternalInterfaceImpl(
-            logsApi = mockk(),
+            logsApi = unimplemented(),
             configService = FakeConfigService(),
             resourceSource = FakeEnvelopeResourceSource(),
-            instrumentationRegistry = mockk(),
-            serializer = mockk(),
+            instrumentationRegistry = unimplemented(),
+            serializer = unimplemented(),
             rnBundleIdTracker = lazy { error("rn bundle id tracker failure") },
             hostedSdkVersionInfo = FlutterSdkVersionInfo(FakeKeyValueStore()),
-            logger = logger,
+            errorHandler = errorHandler,
             telemetryService = telemetryService,
         )
     }
@@ -51,29 +52,29 @@ internal class HostedSdkInternalInterfaceImplTest {
 
     @Test
     fun `sdk exceptions are reported and a fallback is returned`() {
-        impl.setJavaScriptBundleUrl(mockk(), "url")
+        impl.setJavaScriptBundleUrl(fakeContext(), "url")
         impl.logHandledUnityException("name", "message", null)
         assertEquals(listOf("set_javascript_bundle_url", "log_handled_unity_exception"), telemetryService.apiCalls)
         assertEquals(
-            listOf(InternalErrorType.PublicApiFail.toString(), InternalErrorType.PublicApiFail.toString()),
-            logger.internalErrorMessages.map { it.msg },
+            listOf(SdkErrorType.PublicApiFail.toString(), SdkErrorType.PublicApiFail.toString()),
+            errorHandler.sdkErrorMessages.map { it.msg },
         )
     }
 
     @Test
     fun `network span forwarding defaults to disabled when the sdk throws`() {
         val throwingImpl = HostedSdkInternalInterfaceImpl(
-            logsApi = mockk(),
-            configService = mockk(),
-            resourceSource = mockk(),
-            instrumentationRegistry = mockk(),
-            serializer = mockk(),
-            rnBundleIdTracker = lazy { mockk() },
-            hostedSdkVersionInfo = mockk(),
-            logger = logger,
+            logsApi = unimplemented(),
+            configService = unimplemented(),
+            resourceSource = unimplemented(),
+            instrumentationRegistry = unimplemented(),
+            serializer = unimplemented(),
+            rnBundleIdTracker = lazy { unimplemented() },
+            hostedSdkVersionInfo = unimplemented(),
+            errorHandler = errorHandler,
             telemetryService = telemetryService,
         )
         assertFalse(throwingImpl.isNetworkSpanForwardingEnabled())
-        assertEquals(1, logger.internalErrorMessages.size)
+        assertEquals(1, errorHandler.sdkErrorMessages.size)
     }
 }

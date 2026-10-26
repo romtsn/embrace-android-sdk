@@ -15,7 +15,8 @@ import io.embrace.android.embracesdk.internal.NoopInternalInterfaceApi
 import io.embrace.android.embracesdk.internal.api.SdkApi
 import io.embrace.android.embracesdk.internal.api.delegate.TrackedExperimentImpl
 import io.embrace.android.embracesdk.internal.api.delegate.TrackedFeatureFlagImpl
-import io.embrace.android.embracesdk.internal.logging.InternalLogger
+import io.embrace.android.embracesdk.internal.clock.Clock
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
 import io.embrace.android.embracesdk.internal.otel.spans.NoopEmbraceSdkSpan
 import io.embrace.android.embracesdk.network.EmbraceNetworkRequest
 import io.embrace.android.embracesdk.network.http.HttpRequestInfoModifier
@@ -33,11 +34,10 @@ import io.opentelemetry.kotlin.tracing.export.SpanProcessor
 /**
  * A no-op implementation of [SdkApi]. The first API call that gets dropped logs [message] along
  * with the name of the action that could not be performed.
- *
- * When handed a [BufferingSdkInstance] it discards the buffered calls so their memory is released.
  */
 internal class NoopSdkInstance(
-    private val logger: InternalLogger,
+    private val clock: Clock,
+    private val errorHandler: ErrorHandler,
     private val message: String,
 ) : SdkInstance, InternalInterfaceApi by NoopInternalInterfaceApi {
 
@@ -55,20 +55,15 @@ internal class NoopSdkInstance(
             logged = true
             if (message == SDK_NOT_INITIALIZED) {
                 val msg = "$message, cannot $action."
-                logger.logWarning(msg, Throwable(msg))
+                errorHandler.log(msg, Throwable(msg))
             } else {
                 val msg = "$message, cannot $action. Subsequent dropped calls will not be logged."
-                logger.logInfo(msg, Throwable(msg))
+                errorHandler.log(msg, Throwable(msg), severity = ErrorHandler.Severity.INFO)
             }
         }
     }
 
-    override fun onPostStart(buffer: BufferingSdkInstance) {
-        buffer.drainCompletedSpans(this)
-        buffer.drainExperimentCalls(this) {}
-        buffer.drainOTelConfig(this)
-        buffer.discardInternalErrors()
-    }
+    override fun onPostStart(buffer: BufferingSdkInstance) {}
 
     override fun start(context: Context) {}
 
@@ -318,7 +313,7 @@ internal class NoopSdkInstance(
         logDropped("activity_fully_loaded")
     }
 
-    override fun getSdkCurrentTimeMs(): Long = System.currentTimeMillis()
+    override fun getSdkCurrentTimeMs(): Long = clock.now()
 
     override fun addLoadTraceAttribute(activity: Activity, key: String, value: String) {
         logDropped("add_load_trace_attribute")

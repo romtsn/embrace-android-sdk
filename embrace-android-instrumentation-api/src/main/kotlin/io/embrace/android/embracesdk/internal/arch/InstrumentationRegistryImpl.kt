@@ -3,10 +3,11 @@ package io.embrace.android.embracesdk.internal.arch
 import io.embrace.android.embracesdk.internal.arch.datasource.DataSource
 import io.embrace.android.embracesdk.internal.arch.datasource.DataSourceFactory
 import io.embrace.android.embracesdk.internal.arch.datasource.StateDataSource
-import io.embrace.android.embracesdk.internal.logging.InternalErrorType
-import io.embrace.android.embracesdk.internal.logging.InternalLogger
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
+import io.embrace.android.embracesdk.internal.logging.guardSdkCode
+import io.embrace.android.embracesdk.internal.logging.guardSdkCodeEach
 import io.embrace.android.embracesdk.internal.worker.Worker
-import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.reflect.KClass
 import kotlin.reflect.safeCast
 
@@ -15,24 +16,26 @@ import kotlin.reflect.safeCast
  * place to coordinate everything in one place.
  */
 class InstrumentationRegistryImpl(
-    private val logger: InternalLogger,
+    private val errorHandler: ErrorHandler,
 ) : InstrumentationRegistry {
 
-    private val dataSources = CopyOnWriteArrayList<DataSource>()
+    @Volatile
+    private var dataSources: Array<DataSource> = emptyArray()
     private val lock = Any()
+
+    @Volatile
     private var closed = false
 
     override fun onPreSessionEnd() {
-        dataSources
-            .filterIsInstance<SessionPartEndListener>()
-            .forEach {
-                it.onPreSessionEnd()
-            }
+        val listeners = dataSources.filterIsInstance<SessionPartEndListener>()
+        errorHandler.guardSdkCodeEach(SdkErrorType.SessionPartListenerFail, listeners) {
+            it.onPreSessionEnd()
+        }
     }
 
     override fun onPostSessionChange() {
-        dataSources.forEach {
-            it.resetDataCaptureLimits()
+        errorHandler.guardSdkCodeEach(SdkErrorType.SessionPartListenerFail, dataSources.asList()) {
+            errorHandler.guardSdkCode(SdkErrorType.SessionPartListenerFail, it::resetDataCaptureLimits)
             if (it is SessionPartChangeListener) {
                 it.onPostSessionChange()
             }
@@ -40,32 +43,28 @@ class InstrumentationRegistryImpl(
     }
 
     override fun <T : DataSource> add(state: DataSourceFactory<T>): T? {
-        val dataSource = state() ?: return null
-        synchronized(lock) {
-            if (!closed) {
-                dataSources.add(dataSource)
-                // enable data capture once the data source is registered
-                dataSource.onDataCaptureEnabled()
-                return dataSource
+        val added = synchronized(lock) {
+            if (closed) {
+                return null
             }
+            val dataSource = state() ?: return null
+            dataSource.onDataCaptureEnabled()
+            dataSources += dataSource // copy-on-write
+            dataSource
         }
-        disable(dataSource)
-        return null
+        return added
     }
 
     override fun close() {
-        synchronized(lock) {
+        val snapshot = synchronized(lock) {
             closed = true
+            dataSources.also { dataSources = emptyArray() }
         }
-        dataSources.forEach(::disable)
+        snapshot.forEach(::disable)
     }
 
     private fun disable(dataSource: DataSource) {
-        try {
-            dataSource.onDataCaptureDisabled()
-        } catch (exc: Throwable) {
-            logger.trackInternalError(InternalErrorType.InstrumentationDisableFail, exc)
-        }
+        errorHandler.guardSdkCode(SdkErrorType.InstrumentationDisableFail, dataSource::onDataCaptureDisabled)
     }
 
     override fun <T : DataSource> findByType(clazz: KClass<T>): T? {
@@ -80,7 +79,7 @@ class InstrumentationRegistryImpl(
         args: InstrumentationArgs,
     ) {
         val loader = instrumentationProviders.sortedBy { it.priority }
-        loader.forEach { provider ->
+        errorHandler.guardSdkCodeEach(SdkErrorType.InstrumentationRegFail, loader) { provider ->
             if (provider.asyncInit) {
                 args.backgroundWorker(Worker.Background.NonIoRegWorker).submit {
                     registerProvider(provider, args)
@@ -92,10 +91,8 @@ class InstrumentationRegistryImpl(
     }
 
     private fun registerProvider(provider: InstrumentationProvider, args: InstrumentationArgs) {
-        try {
+        errorHandler.guardSdkCode(SdkErrorType.InstrumentationRegFail) {
             provider.register(args)?.let { add(it) }
-        } catch (exc: Throwable) {
-            logger.trackInternalError(InternalErrorType.InstrumentationRegFail, exc)
         }
     }
 

@@ -1,13 +1,14 @@
 package io.embrace.android.embracesdk.instrumentation.huclite
 
 import android.os.Build.VERSION_CODES
-import io.embrace.android.embracesdk.internal.logging.InternalErrorType
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
 import io.embrace.android.embracesdk.internal.utils.VersionChecker
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -16,6 +17,7 @@ import org.junit.Test
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.net.URL
 import java.security.Permission
 import java.security.Principal
 import java.security.cert.Certificate
@@ -260,6 +262,21 @@ internal class InstrumentedHttpsURLConnectionTest {
     }
 
     @Test
+    fun `methods that do not throw after a failed request do not leak the response code exception`() = harness.runTest {
+        every { mockWrappedConnection.responseCode } throws FakeIOException()
+        every { mockWrappedConnection.errorStream } returns null
+        every { mockWrappedConnection.getHeaderField(FAKE_FIELD_NAME) } returns null
+        every { mockWrappedConnection.contentLength } returns -1
+
+        with(instrumentedConnection) {
+            assertNull(errorStream)
+            assertNull(getHeaderField(FAKE_FIELD_NAME))
+            assertEquals(-1, contentLength)
+        }
+        assertSingleClientError()
+    }
+
+    @Test
     fun `getHeaderField with string delegates to wrapped connection and records telemetry`() = harness.runTest {
         every { mockWrappedConnection.getHeaderField(FAKE_FIELD_NAME) } returns FAKE_VALUE
         val result = instrumentedConnection.getHeaderField(FAKE_FIELD_NAME)
@@ -426,7 +443,7 @@ internal class InstrumentedHttpsURLConnectionTest {
         every { mockWrappedConnection.url } throws FakeIOException()
         instrumentedConnection.responseCode
         assertNoRequestRecorded()
-        assertEquals(InternalErrorType.DataSourceDataCaptureFail.toString(), getInternalErrors().single().msg)
+        assertEquals(SdkErrorType.DataSourceDataCaptureFail.toString(), getSdkErrors().single().msg)
     }
 
     @Test
@@ -537,6 +554,15 @@ internal class InstrumentedHttpsURLConnectionTest {
     }
 
     // Test HttpURLConnection methods
+
+    @Test
+    fun `getURL reflects the wrapped connection URL after a redirect`() = harness.runTest {
+        val redirectedUrl = URL("https://fakeurl.pizza/redirected")
+        every { mockWrappedConnection.url } returns redirectedUrl
+
+        assertEquals(redirectedUrl, instrumentedConnection.url)
+        assertNoRequestRecorded()
+    }
 
     @Test
     fun `usingProxy delegates to wrapped connection`() = harness.runTest {

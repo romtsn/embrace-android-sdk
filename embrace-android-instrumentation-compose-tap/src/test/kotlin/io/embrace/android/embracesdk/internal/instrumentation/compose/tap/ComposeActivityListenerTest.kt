@@ -23,7 +23,7 @@ internal class ComposeActivityListenerTest {
     fun setUp() {
         val application: Application = ApplicationProvider.getApplicationContext()
         args = FakeInstrumentationArgs(application)
-        listener = ComposeActivityListener(args.logger, ComposeTapDataSource(args))
+        listener = ComposeActivityListener(args.errorHandler, ComposeTapDataSource(args))
     }
 
     @Test
@@ -33,7 +33,7 @@ internal class ComposeActivityListenerTest {
         listener.onActivityResumed(activity)
 
         assertTrue(activity.window.callback is EmbraceWindowCallback)
-        assertTrue(args.logger.errorMessages.isEmpty())
+        assertTrue(args.errorHandler.errorMessages.isEmpty())
     }
 
     @Test
@@ -46,7 +46,7 @@ internal class ComposeActivityListenerTest {
         val secondCallback = activity.window.callback
 
         assertSame(firstCallback, secondCallback)
-        assertTrue(args.logger.errorMessages.isEmpty())
+        assertTrue(args.errorHandler.errorMessages.isEmpty())
     }
 
     @Test
@@ -63,6 +63,15 @@ internal class ComposeActivityListenerTest {
         listener.onActivityResumed(activity)
 
         assertSame(foreign, activity.window.callback)
-        assertTrue(args.logger.errorMessages.isEmpty())
+        assertTrue(args.errorHandler.errorMessages.isEmpty())
+    }
+
+    @Test
+    fun `onActivityResumed does not wrap the window callback after close`() {
+        val activity = buildActivity(Activity::class.java).setup().get()
+        val original = activity.window.callback
+        listener.close()
+        listener.onActivityResumed(activity)
+        assertSame(original, activity.window.callback)
     }
 }

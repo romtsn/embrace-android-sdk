@@ -10,8 +10,10 @@ import io.embrace.android.embracesdk.internal.delivery.storage.CachedLogEnvelope
 import io.embrace.android.embracesdk.internal.delivery.storage.CachedLogEnvelopeStore.Companion.createNativeCrashEnvelopeMetadata
 import io.embrace.android.embracesdk.internal.delivery.storage.PayloadStorageService
 import io.embrace.android.embracesdk.internal.instrumentation.crash.ndk.NativeCrashService
-import io.embrace.android.embracesdk.internal.logging.InternalErrorType
-import io.embrace.android.embracesdk.internal.logging.InternalLogger
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
+import io.embrace.android.embracesdk.internal.logging.guardSdkCode
+import io.embrace.android.embracesdk.internal.logging.guardSdkCodeEach
 import io.embrace.android.embracesdk.internal.payload.Envelope
 import io.embrace.android.embracesdk.internal.payload.LogPayload
 import io.embrace.android.embracesdk.internal.payload.NativeCrashData
@@ -26,7 +28,6 @@ import java.io.IOException
 import java.io.InputStream
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.TimeoutException
 import java.util.zip.GZIPInputStream
 import java.util.zip.ZipException
 
@@ -35,7 +36,7 @@ internal class PayloadResurrectionServiceImpl(
     private val payloadStorageService: PayloadStorageService,
     private val cacheStorageService: PayloadStorageService,
     private val cachedLogEnvelopeStore: CachedLogEnvelopeStore,
-    private val logger: InternalLogger,
+    private val errorHandler: ErrorHandler,
     private val serializer: PlatformSerializer,
     private val maxPayloadBytes: Long = MAX_CACHED_PAYLOAD_BYTES,
 ) : PayloadResurrectionService {
@@ -54,19 +55,11 @@ internal class PayloadResurrectionServiceImpl(
         pendingSessionPartIdsProvider: Provider<Set<String>>,
     ) {
         EmbTrace.trace("resurrect-payloads") {
-            runCatching {
+            errorHandler.guardSdkCode(SdkErrorType.PayloadResurrectionFail) {
                 processTombstones(nativeCrashServiceProvider, userSessionRestoreDecisionProvider(), pendingSessionPartIdsProvider)
-            }.onFailure {
-                logger.trackInternalError(InternalErrorType.PayloadResurrectionFail, it)
             }
         }
-        completionListeners.forEach { listener ->
-            runCatching {
-                listener()
-            }.onFailure {
-                logger.trackInternalError(InternalErrorType.PayloadResurrectionFail, it)
-            }
-        }
+        errorHandler.guardSdkCodeEach(SdkErrorType.PayloadResurrectionFail, completionListeners) { listener -> listener() }
     }
 
     private fun processTombstones(
@@ -98,18 +91,13 @@ internal class PayloadResurrectionServiceImpl(
                 null
             }
 
-            runCatching {
+            errorHandler.guardSdkCode(SdkErrorType.PayloadResurrectionPayloadFail) {
                 payload.processUndeliveredPayload(
                     nativeCrashService = nativeCrashService,
                     nativeCrashProvider = nativeCrashes::get,
                     postNativeCrashProcessingCallback = processedCrashes::add,
                     userSessionTerminationReason = userSessionTerminationReason,
                     isBackgroundOnly = restoreDecision?.takeIf { it.userSessionId == payload.userSessionId }?.backgroundOnly == true,
-                )
-            }.onFailure {
-                logger.trackInternalError(
-                    type = InternalErrorType.PayloadResurrectionPayloadFail,
-                    throwable = it,
                 )
             }
 
@@ -142,7 +130,7 @@ internal class PayloadResurrectionServiceImpl(
         nativeCrashService: NativeCrashService,
     ) {
         // We assume that there can ever only be one cached crash envelope and one sessionless native crash
-        // Internal errors will be logged if that assumption is not true, as we currently don't store enough
+        // SDK errors will be logged if that assumption is not true, as we currently don't store enough
         // metadata in the native crash to determine which app instance it came from if it isn't associated with
         // a session.
         //
@@ -159,13 +147,17 @@ internal class PayloadResurrectionServiceImpl(
             val cachedCrashEnvelopeMetadata = undeliveredPayloads.firstOrNull { it.isCrashEnvelope() }
             val cachedCrashEnvelope = cachedCrashEnvelopeMetadata
                 ?.let { metadata ->
-                    runCatching {
+                    errorHandler.guardSdkCode(SdkErrorType.PayloadResurrectionPayloadFail, null) {
                         metadata.loadDecompressedPayload()?.let { payloadStream ->
                             serializer.fromJson(payloadStream, Envelope.serializer(LogPayload.serializer()))
                         }
-                    }.getOrNull()
+                    }
                 }
-                ?.also { runCatching { cacheStorageService.delete(cachedCrashEnvelopeMetadata) } }
+                ?.also {
+                    errorHandler.guardSdkCode(SdkErrorType.PayloadResurrectionPayloadFail) {
+                        cacheStorageService.delete(cachedCrashEnvelopeMetadata)
+                    }
+                }
             val resource = cachedCrashEnvelope?.resource
             val metadata = cachedCrashEnvelope?.metadata
             sessionlessNativeCrashes.forEach { nativeCrash ->
@@ -179,8 +171,8 @@ internal class PayloadResurrectionServiceImpl(
                         metadata = metadata,
                     )
                 } else {
-                    logger.trackInternalError(
-                        type = InternalErrorType.NativeCrashResurrectionError,
+                    errorHandler.trackSdkError(
+                        type = SdkErrorType.NativeCrashResurrectionError,
                         throwable = IllegalStateException("Cached native crash envelope data not found"),
                     )
                 }
@@ -193,8 +185,8 @@ internal class PayloadResurrectionServiceImpl(
                 )
             }
             if (sessionlessNativeCrashes.size > 1) {
-                logger.trackInternalError(
-                    type = InternalErrorType.NativeCrashResurrectionError,
+                errorHandler.trackSdkError(
+                    type = SdkErrorType.NativeCrashResurrectionError,
                     throwable = IllegalStateException("Multiple sessionless native crashes found."),
                 )
             }
@@ -318,11 +310,7 @@ internal class PayloadResurrectionServiceImpl(
                 metadata = copy(complete = true),
                 staleEntry = this,
             )
-            try {
-                task.get(5, TimeUnit.SECONDS)
-            } catch (e: TimeoutException) {
-                logger.trackInternalError(InternalErrorType.IntakeFail, e)
-            }
+            errorHandler.guardSdkCode(SdkErrorType.IntakeFail) { task.get(5, TimeUnit.SECONDS) }
         }
     }
 

@@ -1,11 +1,10 @@
 package io.embrace.android.embracesdk.internal.api.delegate
 
-import androidx.test.ext.junit.runners.AndroidJUnit4
 import io.embrace.android.embracesdk.Severity
 import io.embrace.android.embracesdk.fakes.FakeInternalTelemetryService
 import io.embrace.android.embracesdk.fakes.FakeLogService
 import io.embrace.android.embracesdk.fakes.OtelSdkMode
-import io.embrace.android.embracesdk.fakes.injection.FakeInitModule
+import io.embrace.android.embracesdk.fakes.injection.TestInitServices
 import io.embrace.android.embracesdk.internal.arch.datasource.LogSeverity
 import io.embrace.android.embracesdk.internal.logs.attachments.AttachmentService
 import io.embrace.android.embracesdk.internal.telemetry.AppliedLimitType
@@ -15,9 +14,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
-import org.junit.runner.RunWith
 
-@RunWith(AndroidJUnit4::class)
 internal class LogsApiDelegateTest {
 
     private lateinit var delegate: LogsApiDelegate
@@ -28,13 +25,13 @@ internal class LogsApiDelegateTest {
     fun setUp() {
         logService = FakeLogService()
         telemetryService = FakeInternalTelemetryService()
-        val initModule = FakeInitModule(fakeTelemetryService = telemetryService, otelSdkMode = OtelSdkMode.COMPAT)
+        val initServices = TestInitServices(fakeTelemetryService = telemetryService, otelSdkMode = OtelSdkMode.COMPAT)
         delegate = LogsApiDelegate(
             logService = lazy { logService },
             attachmentService = AttachmentService(),
-            logger = initModule.logger,
+            errorHandler = initServices.errorHandler,
             payloadStore = null,
-            serializer = initModule.jsonSerializer,
+            serializer = initServices.jsonSerializer,
             telemetryService = telemetryService,
         )
     }

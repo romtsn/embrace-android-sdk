@@ -2,6 +2,10 @@ package io.embrace.android.embracesdk.internal.vitals
 
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.Message
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
+import io.embrace.android.embracesdk.internal.logging.guardSdkCode
 
 internal interface VitalsScheduler {
     fun post(action: Runnable)
@@ -9,11 +13,12 @@ internal interface VitalsScheduler {
     fun cancelSettle(action: Runnable)
 }
 
-internal class HandlerVitalsScheduler : VitalsScheduler {
+internal class HandlerVitalsScheduler(private val errorHandler: ErrorHandler) : VitalsScheduler {
 
     /**
      * Handler backed by the dedicated vitals thread. Valid only after [start]; also used by
      * the data source for the frame-metrics and display-change callbacks so everything shares one thread.
+     * Catches anything thrown by dispatched work so it can't kill the thread or the app.
      */
     lateinit var handler: Handler
         private set
@@ -29,7 +34,11 @@ internal class HandlerVitalsScheduler : VitalsScheduler {
     fun start() {
         val thread = HandlerThread(HANDLER_THREAD_NAME).apply { start() }
         this.thread = thread
-        handler = Handler(thread.looper)
+        handler = object : Handler(thread.looper) {
+            override fun dispatchMessage(msg: Message) {
+                errorHandler.guardSdkCode(SdkErrorType.UiCallbackFail) { super.dispatchMessage(msg) }
+            }
+        }
     }
 
     /**

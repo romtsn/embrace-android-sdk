@@ -1,7 +1,8 @@
 package io.embrace.android.embracesdk.internal.session.persistence
 
-import io.embrace.android.embracesdk.internal.logging.InternalErrorType
-import io.embrace.android.embracesdk.internal.logging.InternalLogger
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
+import io.embrace.android.embracesdk.internal.logging.guardSdkCode
 import io.embrace.android.embracesdk.internal.utils.SystemTrace
 import java.io.File
 import java.io.IOException
@@ -12,10 +13,10 @@ import java.io.IOException
  */
 class SessionReconstructionService(
     private val sessionsDir: Lazy<File>,
-    private val logger: InternalLogger,
+    private val errorHandler: ErrorHandler,
 ) {
 
-    private val decoder = SessionPartDecoder(logger)
+    private val decoder = SessionPartDecoder(errorHandler)
 
     /**
      * Reconstructs the envelope for the given session part, along with when its files were last
@@ -23,20 +24,13 @@ class SessionReconstructionService(
      */
     fun reconstruct(directory: SessionPartDirectory): DecodedSessionPart? =
         SystemTrace.trace("mf-session-reconstruct") {
-            try {
+            errorHandler.guardSdkCode(SdkErrorType.SessionReconstructionFail, null) {
                 val partDir = File(sessionsDir.value, directory.dirName)
                 if (!partDir.isDirectory) {
-                    trackFailure(IOException(MISSING_PART_DIR_MSG))
-                    return@trace null
+                    errorHandler.trackSdkError(SdkErrorType.SessionReconstructionFail, IOException(MISSING_PART_DIR_MSG))
+                    return@guardSdkCode null
                 }
                 decoder.decode(FileSessionPartSource(partDir))
-            } catch (exc: Throwable) {
-                trackFailure(exc)
-                null
             }
         }
-
-    private fun trackFailure(exc: Throwable) {
-        logger.trackInternalError(InternalErrorType.SessionReconstructionFail, exc)
-    }
 }

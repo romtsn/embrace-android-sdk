@@ -61,7 +61,7 @@ internal class ResurrectionFeatureTest(
             fakeStorageLayer = true,
         ).apply {
             getFakedWorkerExecutor(Worker.Background.SessionPersistenceWorker).blockingMode = false
-            getEmbLogger().throwOnInternalError = false
+            getFakeErrorHandler().throwOnSdkError = false
         }.also {
             cacheStorageService = checkNotNull(it.fakeCacheStorageService)
         }
@@ -112,7 +112,7 @@ internal class ResurrectionFeatureTest(
                 symbols = symbols,
             ),
             testCaseAction = {
-                filesDir = testRule.moduleGraph.coreModule.context.filesDir
+                filesDir = testRule.services.appContext.filesDir
                 recordSession(isBackgroundActivityEnabled = true, endInBackground = false)
                 shutdownSdkWithIncompleteSession()
             },
@@ -158,7 +158,7 @@ internal class ResurrectionFeatureTest(
                 symbols = symbols,
             ),
             testCaseAction = {
-                filesDir = testRule.moduleGraph.coreModule.context.filesDir
+                filesDir = testRule.services.appContext.filesDir
                 recordSession(isBackgroundActivityEnabled = true, endInBackground = false)
                 shutdownSdkWithIncompleteSession()
             },
@@ -205,9 +205,9 @@ internal class ResurrectionFeatureTest(
     private fun shutdownSdkWithIncompleteSession() {
         // the fake runs writes still waiting on the snapshot debounce when it shuts down, without a real-time wait
         testRule.setup.getFakedWorkerExecutor(Worker.Background.SessionPersistenceWorker).shutdown()
-        testRule.moduleGraph.essentialServiceModule.networkConnectivityService.close()
-        testRule.moduleGraph.openTelemetryModule.otelSdkConfig.shutdownExport()
-        testRule.moduleGraph.workerThreadModule.close()
+        testRule.services.networkConnectivityService.close()
+        testRule.services.otelSdkConfig.close()
+        testRule.services.workerThreadPool.close()
     }
 
     private fun obtainSessionPartDirectory(
@@ -283,7 +283,7 @@ internal class ResurrectionFeatureTest(
         )
     }
 
-    @Ignore("Flakey because the internal errors sometimes comes before the crash")
+    @Ignore("Flakey because the SDK errors sometimes comes before the crash")
     @Test
     fun `native crash without session or crash envelope is sent with current SDK envelope`() {
         val crashData = createStoredNativeCrashData(

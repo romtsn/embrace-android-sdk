@@ -6,12 +6,24 @@ package io.embrace.android.embracesdk.benchmark.scenario
 object ScenarioProtocol {
 
     /**
-     * Intent extra naming the [ScenarioSpec] to run, as [PersistenceScenarios.byId] resolves it.
+     * Global setting holding the percentage the app's remote config enables multi-file persistence for.
      */
-    const val EXTRA_SCENARIO_ID: String = "scenario_id"
+    const val MULTI_FILE_PERSISTENCE_SETTING: String = "embrace_pct_multi_file_persistence"
 
     /**
-     * Published while the scenario is running and needs nothing from the benchmark.
+     * Global setting holding the percentage the app's remote config enables opentelemetry-kotlin's regular
+     * implementation for.
+     */
+    const val OTEL_KOTLIN_SDK_SETTING: String = "embrace_pct_otel_kotlin_sdk"
+
+    /**
+     * Global setting that, while set, makes a launch restore the recorded fixture instead of starting the
+     * SDK, so that nothing of its own lands on disk.
+     */
+    const val RESTORE_FIXTURE_SETTING: String = "embrace_benchmark_restore_fixture"
+
+    /**
+     * Published while the task is running and needs nothing from the benchmark.
      */
     const val STATUS_RUNNING: String = "running"
 
@@ -26,7 +38,7 @@ object ScenarioProtocol {
     const val STATUS_AWAIT: String = "await "
 
     /**
-     * The scenario ran, the session ended, and its writes have settled.
+     * The task succeeded. Every [HostTask] reports it on success, and any other status is a failure.
      */
     const val STATUS_OK: String = "ok"
 
@@ -36,7 +48,7 @@ object ScenarioProtocol {
     const val STATUS_NOT_STARTED: String = "sdk-not-started"
 
     /**
-     * Followed by the reason the scenario could not be completed.
+     * Followed by the reason the task failed.
      */
     const val STATUS_ERROR: String = "error "
 }

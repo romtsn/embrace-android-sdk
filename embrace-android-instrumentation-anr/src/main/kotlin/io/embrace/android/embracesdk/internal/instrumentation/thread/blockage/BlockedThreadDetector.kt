@@ -8,8 +8,9 @@ import io.embrace.android.embracesdk.internal.clock.Clock
 import io.embrace.android.embracesdk.internal.instrumentation.thread.blockage.ThreadBlockageEvent.BLOCKED
 import io.embrace.android.embracesdk.internal.instrumentation.thread.blockage.ThreadBlockageEvent.BLOCKED_INTERVAL
 import io.embrace.android.embracesdk.internal.instrumentation.thread.blockage.ThreadBlockageEvent.UNBLOCKED
-import io.embrace.android.embracesdk.internal.logging.InternalErrorType
-import io.embrace.android.embracesdk.internal.logging.InternalLogger
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
+import io.embrace.android.embracesdk.internal.logging.guardSdkCode
 import io.embrace.android.embracesdk.internal.worker.BackgroundWorker
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
@@ -28,11 +29,11 @@ class BlockedThreadDetector(
     private val watchdogWorker: BackgroundWorker,
     private val clock: Clock,
     private val looper: Looper,
-    private val logger: InternalLogger,
+    private val errorHandler: ErrorHandler,
     private val listener: ThreadBlockageListener,
     private val intervalMs: Long,
     private val blockedDurationThreshold: Int,
-) {
+) : AutoCloseable {
 
     private val targetThreadHandler: TargetThreadHandler = TargetThreadHandler(
         looper = looper,
@@ -41,22 +42,30 @@ class BlockedThreadDetector(
         action = ::onTargetThreadProcessedMessage,
     )
     private val started: AtomicBoolean = AtomicBoolean(false)
+    private val closed: AtomicBoolean = AtomicBoolean(false)
     private val blocked: AtomicBoolean = AtomicBoolean(false)
     private val lastWatchdogThreadResponse: AtomicLong = AtomicLong(clock.now())
     private val lastTargetThreadResponse: AtomicLong = AtomicLong(clock.now())
+
+    private val monitorLock = Any()
     private var monitorFuture: ScheduledFuture<*>? = null
 
     /**
      * Starts monitoring the target thread for blockages.
      */
     fun start() {
-        if (!started.getAndSet(true)) {
-            blocked.set(false)
-            lastWatchdogThreadResponse.set(clock.now())
-            lastTargetThreadResponse.set(clock.now())
-            val runnable = Runnable(::checkHeartbeat)
-            runCatching {
-                monitorFuture = watchdogWorker.scheduleAtFixedRate(runnable, 0, intervalMs, TimeUnit.MILLISECONDS)
+        synchronized(monitorLock) {
+            if (closed.get()) {
+                return
+            }
+            if (!started.getAndSet(true)) {
+                blocked.set(false)
+                lastWatchdogThreadResponse.set(clock.now())
+                lastTargetThreadResponse.set(clock.now())
+                val runnable = Runnable(::checkHeartbeat)
+                errorHandler.guardSdkCode(SdkErrorType.ThreadBlockageHeartbeatCheckFail) {
+                    monitorFuture = watchdogWorker.scheduleAtFixedRate(runnable, 0, intervalMs, TimeUnit.MILLISECONDS)
+                }
             }
         }
     }
@@ -65,13 +74,21 @@ class BlockedThreadDetector(
      * Stops monitoring the target thread.
      */
     fun stop() {
-        if (started.getAndSet(false)) {
-            monitorFuture?.let { monitorTask ->
-                if (monitorTask.cancel(false)) {
-                    monitorFuture = null
+        synchronized(monitorLock) {
+            if (started.getAndSet(false)) {
+                monitorFuture?.let { monitorTask ->
+                    if (monitorTask.cancel(false)) {
+                        monitorFuture = null
+                    }
                 }
             }
         }
+    }
+
+    override fun close() {
+        closed.set(true)
+        stop()
+        targetThreadHandler.removeMessages(HEARTBEAT_REQUEST)
     }
 
     /**
@@ -114,15 +131,13 @@ class BlockedThreadDetector(
      * main thread that is used to check whether it is live or not.
      */
     private fun checkHeartbeat() {
-        try {
+        errorHandler.guardSdkCode(SdkErrorType.ThreadBlockageHeartbeatCheckFail) {
             val now = clock.now()
             if (!targetThreadHandler.hasMessages(HEARTBEAT_REQUEST)) {
                 val heartbeatMessage = Message.obtain(targetThreadHandler, HEARTBEAT_REQUEST)
                 targetThreadHandler.sendMessage(heartbeatMessage)
             }
             onMonitorThreadInterval(now)
-        } catch (exc: Exception) {
-            logger.trackInternalError(InternalErrorType.ThreadBlockageHeartbeatCheckFail, exc)
         }
     }
 

@@ -8,8 +8,9 @@ import io.embrace.android.embracesdk.internal.delivery.StoredTelemetryMetadata
 import io.embrace.android.embracesdk.internal.delivery.SupportedEnvelopeType
 import io.embrace.android.embracesdk.internal.handler.MainThreadHandler
 import io.embrace.android.embracesdk.internal.instrumentation.crash.ndk.jni.JniDelegate
-import io.embrace.android.embracesdk.internal.logging.InternalErrorType
-import io.embrace.android.embracesdk.internal.logging.InternalLogger
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
+import io.embrace.android.embracesdk.internal.logging.guardSdkCode
 import io.embrace.android.embracesdk.internal.utils.EmbTrace
 import io.embrace.android.embracesdk.internal.worker.BackgroundWorker
 import io.embrace.android.embracesdk.internal.worker.Worker
@@ -30,7 +31,7 @@ internal class NativeCrashHandlerInstallerImpl(
     private val processIdentifier = args.processIdentifier
 
     private val configService: ConfigService = args.configService
-    private val logger: InternalLogger = args.logger
+    private val errorHandler: ErrorHandler = args.errorHandler
     private val backgroundWorker: BackgroundWorker =
         args.backgroundWorker(Worker.Background.IoRegWorker)
     private val clock: Clock = args.clock
@@ -49,19 +50,21 @@ internal class NativeCrashHandlerInstallerImpl(
     }
 
     private fun startNativeCrashMonitoring() {
-        try {
+        errorHandler.guardSdkCode(SdkErrorType.NativeHandlerInstallFail) {
             if (sharedObjectLoader.loadEmbraceNative()) {
                 val markerFilePath = args.crashMarkerFile.absolutePath
                 updateSessionIds()
-                mainThreadHandler.postAtFrontOfQueue { installSignals(markerFilePath) }
+                mainThreadHandler.postAtFrontOfQueue {
+                    errorHandler.guardSdkCode(SdkErrorType.NativeHandlerInstallFail) { installSignals(markerFilePath) }
+                }
                 mainThreadHandler.postDelayed(
-                    Runnable(::checkSignalHandlersOverwritten),
+                    {
+                        errorHandler.guardSdkCode(SdkErrorType.NativeHandlerInstallFail, ::checkSignalHandlersOverwritten)
+                    },
                     HANDLER_CHECK_DELAY_MS,
                 )
                 args.registerSessionPartChangeListener { updateSessionIds() }
             }
-        } catch (ex: Exception) {
-            logger.trackInternalError(InternalErrorType.NativeHandlerInstallFail, ex)
         }
     }
 
@@ -99,7 +102,8 @@ internal class NativeCrashHandlerInstallerImpl(
 
     private fun checkSignalHandlersOverwritten() {
         synchronized(lock) {
-            if (!disabled && configService.config.autoDataCapture.thirdPartySigHandlerDetectionEnabled) {
+            val detectionEnabled = configService.config.autoDataCapture.thirdPartySigHandlerDetectionEnabled
+            if (!disabled && signalHandlersInstalled && detectionEnabled) {
                 val culprit = delegate.checkForOverwrittenHandlers()
                 if (culprit != null) {
                     if (shouldIgnoreOverriddenHandler(culprit)) {

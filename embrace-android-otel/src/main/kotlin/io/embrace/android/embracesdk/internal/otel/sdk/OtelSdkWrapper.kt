@@ -2,7 +2,7 @@ package io.embrace.android.embracesdk.internal.otel.sdk
 
 import io.embrace.android.embracesdk.internal.config.instrumented.InstrumentedConfigImpl
 import io.embrace.android.embracesdk.internal.config.instrumented.schema.OtelLimitsConfig
-import io.embrace.android.embracesdk.internal.logging.InternalErrorHandler
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
 import io.embrace.android.embracesdk.internal.otel.config.OtelSdkConfig
 import io.embrace.android.embracesdk.internal.otel.config.getMaxTotalAttributeCount
 import io.embrace.android.embracesdk.internal.otel.config.getMaxTotalEventCount
@@ -10,8 +10,6 @@ import io.embrace.android.embracesdk.internal.otel.config.getMaxTotalLinkCount
 import io.embrace.android.embracesdk.internal.otel.createSdkOtelInstance
 import io.embrace.android.embracesdk.internal.otel.impl.EmbOpenTelemetry
 import io.embrace.android.embracesdk.internal.otel.impl.EmbTracerProvider
-import io.embrace.android.embracesdk.internal.otel.logs.PrivateTelemetryFilteringLogRecordProcessor
-import io.embrace.android.embracesdk.internal.otel.spans.PrivateTelemetryFilteringSpanProcessor
 import io.embrace.android.embracesdk.internal.otel.spans.SpanService
 import io.embrace.android.embracesdk.internal.utils.EmbTrace
 import io.embrace.android.embracesdk.internal.utils.Provider
@@ -31,7 +29,7 @@ class OtelSdkWrapper(
     otelClock: Clock,
     configuration: OtelSdkConfig,
     spanServiceProvider: Provider<SpanService>,
-    errorHandler: InternalErrorHandler,
+    errorHandler: ErrorHandler,
     limits: OtelLimitsConfig = InstrumentedConfigImpl.otelLimits,
     val useKotlinSdk: Boolean,
 ) {
@@ -79,7 +77,7 @@ class OtelSdkWrapper(
         otelClock: Clock,
         configuration: OtelSdkConfig,
         limits: OtelLimitsConfig,
-        errorHandler: InternalErrorHandler,
+        errorHandler: ErrorHandler,
     ): OpenTelemetry =
         createSdkOtelInstance(
             useKotlinSdk = useKotlinSdk,
@@ -91,8 +89,8 @@ class OtelSdkWrapper(
                     linkCountLimit = limits.getMaxTotalLinkCount()
                 }
                 export {
-                    val processors = listOf(configuration.spanProcessor) + configuration.externalConfig.getSpanProcessors()
-                        .map(::PrivateTelemetryFilteringSpanProcessor)
+                    val processors = listOf(ErrorReportingSpanProcessor(configuration.spanProcessor, errorHandler)) +
+                        configuration.externalSpanProcessors
                     compositeSpanProcessor(*processors.toTypedArray())
                 }
             },
@@ -102,8 +100,8 @@ class OtelSdkWrapper(
                     attributeCountLimit = limits.getMaxTotalAttributeCount()
                 }
                 export {
-                    val processors = listOf(configuration.logRecordProcessor) + configuration.externalConfig.getLogRecordProcessors()
-                        .map(::PrivateTelemetryFilteringLogRecordProcessor)
+                    val processors = listOf(ErrorReportingLogRecordProcessor(configuration.logRecordProcessor, errorHandler)) +
+                        configuration.externalLogRecordProcessors
                     compositeLogRecordProcessor(*processors.toTypedArray())
                 }
             },
@@ -114,7 +112,7 @@ class OtelSdkWrapper(
     val openTelemetryKotlin: OpenTelemetry by lazy {
         EmbOpenTelemetry(
             impl = kotlinApi,
-            traceProviderSupplier = { EmbTracerProvider(kotlinApi, spanServiceProvider, otelClock) },
+            traceProviderSupplier = { EmbTracerProvider(kotlinApi, spanServiceProvider, otelClock, errorHandler) },
         )
     }
 }

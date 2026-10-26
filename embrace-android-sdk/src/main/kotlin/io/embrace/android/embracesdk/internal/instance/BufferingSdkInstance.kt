@@ -10,16 +10,20 @@ import io.embrace.android.embracesdk.internal.NoopInternalInterfaceApi
 import io.embrace.android.embracesdk.internal.api.ExperimentApi
 import io.embrace.android.embracesdk.internal.api.OTelApi
 import io.embrace.android.embracesdk.internal.api.SdkApi
+import io.embrace.android.embracesdk.internal.arch.datasource.LogSeverity
 import io.embrace.android.embracesdk.internal.arch.datasource.TelemetryDestination
+import io.embrace.android.embracesdk.internal.arch.schema.SchemaType.SdkError
 import io.embrace.android.embracesdk.internal.capture.experiment.ExperimentApiCall
 import io.embrace.android.embracesdk.internal.capture.experiment.ExperimentKind
 import io.embrace.android.embracesdk.internal.capture.experiment.TrackedData
 import io.embrace.android.embracesdk.internal.clock.Clock
 import io.embrace.android.embracesdk.internal.config.resolved.ExperimentConfig
 import io.embrace.android.embracesdk.internal.instrumentation.network.DefaultTraceparentGenerator
-import io.embrace.android.embracesdk.internal.logging.BufferedInternalErrorHandler
-import io.embrace.android.embracesdk.internal.logging.InternalErrorType
-import io.embrace.android.embracesdk.internal.logging.InternalLogger
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
+import io.embrace.android.embracesdk.internal.logging.ErrorHandlerImpl
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
+import io.embrace.android.embracesdk.internal.logging.guardSdkCode
+import io.embrace.android.embracesdk.internal.logging.guardSdkCodeEach
 import io.embrace.android.embracesdk.spans.EmbraceSpan
 import io.embrace.android.embracesdk.spans.EmbraceSpanEvent
 import io.embrace.android.embracesdk.spans.ErrorCode
@@ -40,10 +44,9 @@ import java.util.concurrent.TimeUnit
  */
 internal class BufferingSdkInstance(
     private val clock: Clock,
-    private val logger: InternalLogger,
-    private val internalErrorHandler: BufferedInternalErrorHandler = BufferedInternalErrorHandler(clock),
-) : InternalSdkApi,
-    SdkApi by NoopSdkInstance(logger, NoopSdkInstance.SDK_NOT_INITIALIZED),
+    private val errorHandler: ErrorHandler = ErrorHandlerImpl(clock),
+) : SdkInstance,
+    SdkApi by NoopSdkInstance(clock, errorHandler, NoopSdkInstance.SDK_NOT_INITIALIZED),
     InternalInterfaceApi by NoopInternalInterfaceApi {
 
     private val otelConfigCalls = CallBuffer<OTelApi, OTelConfigCall>()
@@ -58,17 +61,18 @@ internal class BufferingSdkInstance(
     var applicationInitStartMs: Long? = null
         private set
 
+    @Volatile
+    private var closed = false
+
     fun drainOTelConfig(target: OTelApi) {
         otelConfigCalls.drain(target) { calls ->
-            calls.forEach { call ->
-                guard {
-                    when (call) {
-                        is OTelConfigCall.AddSpanExporter -> target.addSpanExporter(call.exporter)
-                        is OTelConfigCall.AddSpanProcessor -> target.addSpanProcessor(call.processor)
-                        is OTelConfigCall.AddLogRecordExporter -> target.addLogRecordExporter(call.exporter)
-                        is OTelConfigCall.AddLogRecordProcessor -> target.addLogRecordProcessor(call.processor)
-                        is OTelConfigCall.SetResourceAttribute -> target.setResourceAttribute(call.key, call.value)
-                    }
+            errorHandler.guardSdkCodeEach(SdkErrorType.PublicApiFail, calls) { call ->
+                when (call) {
+                    is OTelConfigCall.AddSpanExporter -> target.addSpanExporter(call.exporter)
+                    is OTelConfigCall.AddSpanProcessor -> target.addSpanProcessor(call.processor)
+                    is OTelConfigCall.AddLogRecordExporter -> target.addLogRecordExporter(call.exporter)
+                    is OTelConfigCall.AddLogRecordProcessor -> target.addLogRecordProcessor(call.processor)
+                    is OTelConfigCall.SetResourceAttribute -> target.setResourceAttribute(call.key, call.value)
                 }
             }
         }
@@ -76,32 +80,54 @@ internal class BufferingSdkInstance(
 
     fun drainCompletedSpans(target: TracingApi) {
         completedSpanCalls.drain(target) { calls ->
-            calls.forEach { call ->
-                guard {
-                    target.recordCompletedSpan(
-                        call.name,
-                        call.startTimeMs,
-                        call.endTimeMs,
-                        call.errorCode,
-                        call.parent,
-                        call.attributes,
-                        call.events,
-                    )
-                }
+            errorHandler.guardSdkCodeEach(SdkErrorType.PublicApiFail, calls) { call ->
+                target.recordCompletedSpan(
+                    call.name,
+                    call.startTimeMs,
+                    call.endTimeMs,
+                    call.errorCode,
+                    call.parent,
+                    call.attributes,
+                    call.events,
+                )
             }
         }
     }
 
     fun drainExperimentCalls(target: ExperimentApi, replay: (List<ExperimentApiCall>) -> Unit) {
-        experimentCalls.drain(target) { calls -> guard { replay(calls) } }
+        experimentCalls.drain(target) { calls -> errorHandler.guardSdkCode(SdkErrorType.PublicApiFail) { replay(calls) } }
     }
 
-    fun drainInternalErrors(destination: TelemetryDestination, enabled: Boolean) {
-        internalErrorHandler.drainTo(destination, enabled)
+    /**
+     * Sends buffered SDK errors to [destination], or discards them & stops capture if it is null.
+     */
+    fun drainSdkErrors(destination: TelemetryDestination?) {
+        if (closed) {
+            return
+        }
+        errorHandler.drain(
+            destination?.let {
+                {
+                        throwable: Throwable, timestampMs: Long ->
+                    it.addLog(
+                        schemaType = SdkError(throwable),
+                        severity = LogSeverity.ERROR,
+                        message = "",
+                        isPrivate = true,
+                        timestampMs = timestampMs,
+                    )
+                }
+            },
+        )
     }
 
-    fun discardInternalErrors() {
-        internalErrorHandler.discard()
+    override fun onPostStart(buffer: BufferingSdkInstance) {}
+
+    override fun close() {
+        closed = true
+        otelConfigCalls.close()
+        completedSpanCalls.close()
+        experimentCalls.close()
     }
 
     override fun addSpanExporter(spanExporter: SpanExporter) {
@@ -168,16 +194,16 @@ internal class BufferingSdkInstance(
                 }
             },
             forward = { it.recordCompletedSpan(name, startTimeMs, endTimeMs, errorCode, parent, attributes, events) },
-        )
+        ) ?: false
     }
 
     override fun applicationInitStart() {
-        if (applicationInitStartMs == null) {
+        if (!closed && applicationInitStartMs == null) {
             applicationInitStartMs = clock.now()
         }
     }
 
-    override fun getSdkCurrentTimeMs(): Long = 0
+    override fun getSdkCurrentTimeMs(): Long = clock.now()
 
     override fun getOpenTelemetryKotlin(): OpenTelemetry = NoopOpenTelemetry
 
@@ -228,14 +254,6 @@ internal class BufferingSdkInstance(
             buffer = { calls -> untrack(calls, ids, ExperimentKind.FEATURE_FLAG, endedAt) },
             forward = { it.untrackFeatureFlags(ids, endedAt) },
         )
-    }
-
-    private inline fun guard(action: () -> Unit) {
-        try {
-            action()
-        } catch (exc: Throwable) {
-            logger.trackInternalError(InternalErrorType.PublicApiFail, exc)
-        }
     }
 
     private fun bufferOTelConfig(calls: MutableList<OTelConfigCall>, call: OTelConfigCall) {
@@ -309,7 +327,7 @@ internal class BufferingSdkInstance(
      * Buffers calls of type [C] until [drain] supplies a target of type [T], after which calls are forwarded to that
      * instead.
      */
-    private class CallBuffer<T : Any, C : Any> {
+    private class CallBuffer<T : Any, C : Any> : AutoCloseable {
         // properties not private to avoid synthetic accessors
         val lock = Any()
 
@@ -320,22 +338,36 @@ internal class BufferingSdkInstance(
         var target: T? = null
             private set
 
+        @Volatile
+        var closed: Boolean = false
+            private set
+
         /**
          * Calls [forward] with the target if one has been set. Otherwise, calls [buffer] with the buffered calls.
+         * Returns null without calling either once closed.
          */
-        inline fun <R> submit(buffer: (MutableList<C>) -> R, forward: (T) -> R): R {
+        inline fun <R> submit(buffer: (MutableList<C>) -> R, forward: (T) -> R): R? {
+            if (closed) {
+                return null
+            }
             val current = target ?: synchronized(lock) {
+                if (closed) {
+                    return null
+                }
                 target ?: return buffer(calls)
             }
             return forward(current)
         }
 
         /**
-         * Passes the buffered calls to [replay], then forwards all later calls to [target].
+         * Passes the buffered calls to [replay], then forwards all later calls to [target]. Has no effect once closed.
          */
         fun drain(target: T, replay: (List<C>) -> Unit) {
             while (true) {
                 val batch = synchronized(lock) {
+                    if (closed) {
+                        return
+                    }
                     if (calls.isEmpty()) {
                         this.target = target
                         return
@@ -343,6 +375,14 @@ internal class BufferingSdkInstance(
                     calls.also { calls = mutableListOf() }
                 }
                 replay(batch)
+            }
+        }
+
+        override fun close() {
+            synchronized(lock) {
+                closed = true
+                target = null
+                calls = mutableListOf()
             }
         }
     }

@@ -1,7 +1,8 @@
 package io.embrace.android.embracesdk.internal.session.persistence
 
-import io.embrace.android.embracesdk.internal.logging.InternalErrorType
-import io.embrace.android.embracesdk.internal.logging.InternalLogger
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
+import io.embrace.android.embracesdk.internal.logging.guardSdkCode
 import io.embrace.android.embracesdk.internal.payload.EnvelopeMetadata
 import io.embrace.android.embracesdk.internal.payload.EnvelopeResource
 import io.embrace.android.embracesdk.internal.utils.SystemTrace
@@ -22,7 +23,7 @@ class SessionMetadataWriter(
     private val envelopeVersion: String,
     private val envelopeType: String,
     private val sharedLibSymbolMappingSource: () -> Map<String, String>?,
-    private val logger: InternalLogger,
+    private val errorHandler: ErrorHandler,
 ) {
 
     /**
@@ -40,12 +41,7 @@ class SessionMetadataWriter(
      * Writes the metadata for the active session part, replacing any metadata already on disk.
      */
     fun write(): Boolean = SystemTrace.trace("mf-write-metadata") {
-        try {
-            writeImpl()
-        } catch (exc: Throwable) {
-            trackFailure(exc)
-            false
-        }
+        errorHandler.guardSdkCode(SdkErrorType.SessionMetadataWriteFail, false, ::writeImpl)
     }
 
     private fun writeImpl(): Boolean {
@@ -81,6 +77,6 @@ class SessionMetadataWriter(
     }
 
     private fun trackFailure(exc: Throwable) {
-        logger.trackInternalError(InternalErrorType.SessionMetadataWriteFail, exc)
+        errorHandler.trackSdkError(SdkErrorType.SessionMetadataWriteFail, exc)
     }
 }

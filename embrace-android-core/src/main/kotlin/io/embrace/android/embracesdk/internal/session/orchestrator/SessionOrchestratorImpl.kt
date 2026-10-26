@@ -2,7 +2,6 @@
 
 package io.embrace.android.embracesdk.internal.session.orchestrator
 
-import io.embrace.android.embracesdk.SessionStateEvent
 import io.embrace.android.embracesdk.SessionStateEvent.UserSessionActive
 import io.embrace.android.embracesdk.SessionStateEvent.UserSessionEnded
 import io.embrace.android.embracesdk.internal.arch.InstrumentationRegistry
@@ -14,8 +13,9 @@ import io.embrace.android.embracesdk.internal.arch.state.ProcessStateTracker
 import io.embrace.android.embracesdk.internal.clock.Clock
 import io.embrace.android.embracesdk.internal.config.ConfigService
 import io.embrace.android.embracesdk.internal.delivery.caching.PayloadCachingService
-import io.embrace.android.embracesdk.internal.logging.InternalErrorType
-import io.embrace.android.embracesdk.internal.logging.InternalLogger
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
+import io.embrace.android.embracesdk.internal.logging.guardSdkCode
 import io.embrace.android.embracesdk.internal.payload.Envelope
 import io.embrace.android.embracesdk.internal.payload.SessionPartPayload
 import io.embrace.android.embracesdk.internal.session.SessionPartToken
@@ -37,7 +37,6 @@ import io.embrace.android.embracesdk.internal.worker.BackgroundWorker
 import io.embrace.android.embracesdk.semconv.EmbSessionAttributes
 import io.embrace.android.embracesdk.semconv.EmbSessionAttributes.EmbUserSessionTerminationReasonValues
 import io.embrace.android.embracesdk.semconv.ExperimentalSemconv
-import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 import kotlin.math.max
 
@@ -56,7 +55,7 @@ internal class SessionOrchestratorImpl(
     private val ordinalStore: OrdinalStore,
     private val store: KeyValueStore,
     private val metadataStore: UserSessionMetadataStore,
-    private val logger: InternalLogger,
+    private val errorHandler: ErrorHandler,
     private val backgroundWorker: BackgroundWorker,
     private val uuidSource: UuidSource,
     private val startupClassifier: StartupClassifier,
@@ -68,7 +67,7 @@ internal class SessionOrchestratorImpl(
      */
     private var coldStart = true
     private val lock = Any()
-    private val userSessionListeners = CopyOnWriteArrayList<UserSessionListener>()
+    private val userSessionEvents = UserSessionEventDispatcher(errorHandler)
 
     @Volatile
     private var state = processStateTracker.getAppState()
@@ -104,17 +103,17 @@ internal class SessionOrchestratorImpl(
 
     private fun loadPersistedUserSession() {
         synchronized(lock) {
-            try {
+            userSessionState = errorHandler.guardSdkCode(SdkErrorType.UserSessionLoadFail, UserSessionState.NoActiveSession) {
                 val stored = metadataStore.load()
                 val overMaxDuration = stored?.isOverMaxDuration(clock) ?: false
                 val inactive = stored?.isInactive(clock) ?: false
-                userSessionState = when {
+                when {
                     stored == null -> UserSessionState.NoActiveSession
 
                     // Current timestamp not congruent with stored user session's timestamp, so clear the cache
                     clock.now() < stored.startTimeMs -> {
-                        logger.trackInternalError(
-                            InternalErrorType.ClockBackwardsShift,
+                        errorHandler.trackSdkError(
+                            SdkErrorType.ClockBackwardsShift,
                             IllegalStateException(
                                 "Clock shifted backwards from previous user session.",
                             ),
@@ -151,8 +150,6 @@ internal class SessionOrchestratorImpl(
                         UserSessionState.NoActiveSession
                     }
                 }
-            } catch (e: Exception) {
-                userSessionState = UserSessionState.NoActiveSession
             }
         }
     }
@@ -273,6 +270,10 @@ internal class SessionOrchestratorImpl(
         )
     }
 
+    override fun close() {
+        sessionPartWriter?.close()
+    }
+
     override fun handleCrash(crashId: String) {
         val timestamp = clock.now()
         transitionState(
@@ -298,32 +299,18 @@ internal class SessionOrchestratorImpl(
 
     override fun addUserSessionListener(listener: UserSessionListener) {
         synchronized(lock) {
-            if (!userSessionListeners.addIfAbsent(listener)) {
+            if (!userSessionEvents.addListener(listener)) {
                 return
             }
             currentUserSession()?.let { metadata ->
-                try {
-                    listener.onSessionStateEvent(UserSessionActive(metadata.userSessionId))
-                } catch (e: Exception) {
-                    logger.trackInternalError(InternalErrorType.UserSessionCallbackFail, e)
-                }
+                userSessionEvents.notifyListener(listener, UserSessionActive(metadata.userSessionId))
             }
         }
     }
 
     override fun removeUserSessionListener(listener: UserSessionListener) {
         synchronized(lock) {
-            userSessionListeners.remove(listener)
-        }
-    }
-
-    private fun notifyListeners(event: SessionStateEvent) {
-        userSessionListeners.forEach { listener ->
-            try {
-                listener.onSessionStateEvent(event)
-            } catch (e: Exception) {
-                logger.trackInternalError(InternalErrorType.UserSessionCallbackFail, e)
-            }
+            userSessionEvents.removeListener(listener)
         }
     }
 
@@ -392,14 +379,8 @@ internal class SessionOrchestratorImpl(
                             )
                         },
                         startSessionPartCallback = {
-                            // the previous session has fully ended at this point
-                            // now, we can clear the SDK state and prepare for the next session
-                            EmbTrace.trace("prepare-new-session") {
-                                boundaryDelegate.cleanupAfterSessionEnd()
-                            }
-
-                            // transition the user session before creating the new session part so that
-                            // the user session is always ready
+                            // the previous session part has fully ended at this point. Transition the user session
+                            // before creating the new session part so that the user session is always ready
                             transitionUserSession(transitionType, endAppState, timestamp)
 
                             // create the next session part span if we should, and update the SDK state to reflect the transition
@@ -424,7 +405,7 @@ internal class SessionOrchestratorImpl(
                                 sessionTracker.setProcessStateSummary(newSessionPart.sessionPartId, userSession.userSessionId)
                             }
                         }
-                        boundaryDelegate.prepareForNewSession()
+                        boundaryDelegate.prepareForNewSessionPart()
                         sessionPartSpanAttrPopulator.populateSessionPartSpanStartAttrs(newSessionPart, userSession)
                         if (transitionType != TransitionType.CRASH) {
                             // create the directory that holds this session part's telemetry
@@ -457,6 +438,7 @@ internal class SessionOrchestratorImpl(
                     }
                 }
             }
+            userSessionEvents.deliverPending()
         }
     }
 
@@ -465,9 +447,11 @@ internal class SessionOrchestratorImpl(
         if (metadata != null && !metadata.isBackgroundOnly) {
             inactivityTimerState = SessionTimerState(
                 backgroundWorker.schedule<Unit>(
-                    ::onInactivityTimeout,
-                    metadata.inactivityTimeoutSecs,
-                    TimeUnit.SECONDS,
+                    command = {
+                        errorHandler.guardSdkCode(SdkErrorType.UserSessionTimerFail, ::onInactivityTimeout)
+                    },
+                    delay = metadata.inactivityTimeoutSecs,
+                    unit = TimeUnit.SECONDS,
                 ),
             )
         }
@@ -484,8 +468,13 @@ internal class SessionOrchestratorImpl(
             return
         }
         val intervalMs = lastActivityUpdateIntervalMs(metadata)
+        // guarded, as a throw from a fixed-delay task cancels every later run
         val future = backgroundWorker.scheduleWithFixedDelay(
-            { synchronized(lock) { updateUserSessionActivityIfStale(clock.now(), intervalMs) } },
+            {
+                errorHandler.guardSdkCode(SdkErrorType.UserSessionTimerFail) {
+                    synchronized(lock) { updateUserSessionActivityIfStale(clock.now(), intervalMs) }
+                }
+            },
             intervalMs,
             intervalMs,
             TimeUnit.MILLISECONDS,
@@ -500,7 +489,7 @@ internal class SessionOrchestratorImpl(
             val delay = max(remainingSecs, 0)
             maxDurationTimerState = SessionTimerState(
                 backgroundWorker.schedule<Unit>(
-                    ::onMaxDurationTimeout,
+                    { errorHandler.guardSdkCode(SdkErrorType.UserSessionTimerFail, ::onMaxDurationTimeout) },
                     delay,
                     TimeUnit.SECONDS,
                 ),
@@ -630,10 +619,10 @@ internal class SessionOrchestratorImpl(
                 if (userSessionState !is Active) {
                     val newMetadata = createUnclassifiedUserSession(timestamp)
                     setActiveUserSession(newMetadata)
-                    notifyListeners(UserSessionActive(newMetadata.userSessionId))
+                    userSessionEvents.enqueue(UserSessionActive(newMetadata.userSessionId))
                     backgroundStartupWindowTimerState = SessionTimerState(
                         backgroundWorker.schedule<Unit>(
-                            ::makeCurrentUserSessionBackgroundOnly,
+                            { errorHandler.guardSdkCode(SdkErrorType.UserSessionTimerFail, ::makeCurrentUserSessionBackgroundOnly) },
                             BACKGROUND_STARTUP_WINDOW_MS,
                             TimeUnit.MILLISECONDS,
                         ),
@@ -736,7 +725,7 @@ internal class SessionOrchestratorImpl(
         // responsible for scheduling the new session's end timers (see scheduleSessionEndTimers).
         val newMetadata = createUnclassifiedUserSession(timestamp).classify(isBackgroundOnly = endProcessState == ProcessState.BACKGROUND)
         setActiveUserSession(newMetadata)
-        notifyListeners(UserSessionActive(newMetadata.userSessionId))
+        userSessionEvents.enqueue(UserSessionActive(newMetadata.userSessionId))
     }
 
     /**
@@ -750,7 +739,8 @@ internal class SessionOrchestratorImpl(
             inactivityTimerState = null
             metadataStore.clear()
             userSessionState = UserSessionState.Terminated
-            notifyListeners(UserSessionEnded(it.userSessionId))
+            boundaryDelegate.cleanupAfterUserSessionEnd()
+            userSessionEvents.enqueue(UserSessionEnded(it.userSessionId))
         }
     }
 
@@ -781,8 +771,8 @@ internal class SessionOrchestratorImpl(
         when {
             // Don't continue session if current time is not congruent with the user session's timestamp
             timestamp < startTimeMs -> {
-                logger.trackInternalError(
-                    InternalErrorType.ClockBackwardsShift,
+                errorHandler.trackSdkError(
+                    SdkErrorType.ClockBackwardsShift,
                     IllegalStateException("Clock shifted backwards from user session start time."),
                 )
                 false

@@ -5,7 +5,7 @@ import android.os.Looper
 import android.view.View
 import android.view.ViewTreeObserver
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import io.embrace.android.embracesdk.fakes.FakeInternalLogger
+import io.embrace.android.embracesdk.fakes.FakeErrorHandler
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Before
@@ -18,7 +18,7 @@ import org.robolectric.util.ReflectionHelpers
 @RunWith(AndroidJUnit4::class)
 internal class FirstDrawDetectorTest {
 
-    private lateinit var logger: FakeInternalLogger
+    private lateinit var errorHandler: FakeErrorHandler
     private lateinit var detector: FirstDrawDetector
     private lateinit var activity: Activity
     private var drawBeginCount = 0
@@ -26,8 +26,8 @@ internal class FirstDrawDetectorTest {
 
     @Before
     fun setUp() {
-        logger = FakeInternalLogger()
-        detector = FirstDrawDetector(logger)
+        errorHandler = FakeErrorHandler()
+        detector = FirstDrawDetector(errorHandler)
         activity = Robolectric.buildActivity(Activity::class.java).setup().get()
         drawBeginCount = 0
         drawCompleteCount = 0
@@ -47,7 +47,7 @@ internal class FirstDrawDetectorTest {
         drawFrame()
         assertEquals(1, drawBeginCount)
         assertEquals(1, drawCompleteCount)
-        assertEquals(0, logger.internalErrorMessages.size)
+        assertEquals(0, errorHandler.sdkErrorMessages.size)
     }
 
     @Test
@@ -134,13 +134,13 @@ internal class FirstDrawDetectorTest {
 
     @Test
     fun `null window callback is reported once and callbacks are never invoked`() {
-        logger.throwOnInternalError = false
+        errorHandler.throwOnSdkError = false
         activity.window.callback = null
         register()
         register()
 
         drawFrame()
-        assertEquals(1, logger.internalErrorMessages.size)
+        assertEquals(1, errorHandler.sdkErrorMessages.size)
         assertEquals(0, drawBeginCount)
         assertEquals(0, drawCompleteCount)
     }
@@ -157,6 +157,70 @@ internal class FirstDrawDetectorTest {
         drawFrame()
         assertEquals(2, drawBeginCount)
         assertEquals(2, drawCompleteCount)
+    }
+
+    @Test
+    fun `closing before first draw means callbacks are never invoked`() {
+        register()
+        detector.close()
+
+        drawFrame()
+        assertEquals(0, drawBeginCount)
+        assertEquals(0, drawCompleteCount)
+    }
+
+    @Test
+    fun `closing after draw begins but before frame commit means complete callback is never invoked`() {
+        register()
+        dispatchOnDraw()
+        assertEquals(1, drawBeginCount)
+
+        detector.close()
+        commitFrame()
+        assertEquals(1, drawBeginCount)
+        assertEquals(0, drawCompleteCount)
+    }
+
+    @Test
+    fun `registering after close is ignored`() {
+        detector.close()
+        register()
+
+        drawFrame()
+        assertEquals(0, drawBeginCount)
+        assertEquals(0, drawCompleteCount)
+    }
+
+    @Test
+    fun `closing before content is set leaves a window callback that only delegates`() {
+        val controller = Robolectric.buildActivity(Activity::class.java)
+        val newActivity = controller.get()
+        register(newActivity)
+        detector.close()
+
+        controller.create()
+        newActivity.setContentView(View(newActivity))
+        controller.start().resume().visible()
+        drawFrame(newActivity)
+        assertEquals(0, drawBeginCount)
+        assertEquals(0, drawCompleteCount)
+    }
+
+    @Test
+    fun `a new detector does not reuse the window callback of a closed detector`() {
+        val controller = Robolectric.buildActivity(Activity::class.java)
+        val newActivity = controller.get()
+        register(newActivity)
+        detector.close()
+
+        detector = FirstDrawDetector(errorHandler)
+        register(newActivity)
+        controller.create()
+        newActivity.setContentView(View(newActivity))
+        controller.start().resume().visible()
+        drawFrame(newActivity)
+        assertEquals(1, drawBeginCount)
+        assertEquals(1, drawCompleteCount)
     }
 
     private fun register(target: Activity = activity) {

@@ -21,13 +21,13 @@ class LeakDetectionDataSource(args: InstrumentationArgs) :
      * Visible so that tests can drive tracking and reclamation directly, rather than depending on real Activity
      * lifecycle callbacks and real collections.
      */
-    internal val leakDetector = LeakDetector(args.clock)
+    internal val leakDetector = LeakDetector(args.clock, args.errorHandler)
 
     private val webViewLeakDetectionEnabled = args.configService.config.autoDataCapture.webViewLeakDetectionEnabled
 
     private val fragmentSupport: FragmentSupport =
         if (args.configService.config.autoDataCapture.fragmentLeakDetectionEnabled) {
-            createFragmentSupport(leakDetector, args::activeSessionIds, args.logger, webViewLeakDetectionEnabled)
+            createFragmentSupport(leakDetector, args::activeSessionIds, args.errorHandler, webViewLeakDetectionEnabled)
         } else {
             NoOpFragmentSupport
         }
@@ -36,7 +36,7 @@ class LeakDetectionDataSource(args: InstrumentationArgs) :
         leakDetector,
         args::activeSessionIds,
         fragmentSupport,
-        args.logger,
+        args.errorHandler,
         webViewLeakDetectionEnabled,
     )
 
@@ -47,6 +47,7 @@ class LeakDetectionDataSource(args: InstrumentationArgs) :
 
     override fun onDataCaptureDisabled() {
         application.unregisterActivityLifecycleCallbacks(callbacks)
+        fragmentSupport.close()
         leakDetector.stop()
     }
 

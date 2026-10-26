@@ -6,7 +6,9 @@ import android.os.Bundle
 import io.embrace.android.embracesdk.annotation.IgnoreForStartup
 import io.embrace.android.embracesdk.internal.instrumentation.startup.activity.traceInstanceId
 import io.embrace.android.embracesdk.internal.instrumentation.startup.ui.DrawEventEmitter
-import java.io.Closeable
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
+import io.embrace.android.embracesdk.internal.logging.guardSdkCode
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -32,7 +34,8 @@ class StartupTracker(
     private val appStartupDataCollector: AppStartupDataCollector,
     private val activityLoadEventEmitter: Application.ActivityLifecycleCallbacks?,
     private val drawEventEmitter: DrawEventEmitter?,
-) : Application.ActivityLifecycleCallbacks, Closeable {
+    private val errorHandler: ErrorHandler,
+) : Application.ActivityLifecycleCallbacks, AutoCloseable {
 
     private val lock = Any()
 
@@ -44,43 +47,53 @@ class StartupTracker(
     private var startupActivityId: Int? = null
 
     override fun onActivityPreCreated(activity: Activity, savedInstanceState: Bundle?) {
-        firstActivityInit(activity)
-        if (activity.useAsStartupActivity()) {
-            appStartupDataCollector.startupActivityPreCreated()
+        errorHandler.guardSdkCode(SdkErrorType.UiCallbackFail) {
+            firstActivityInit(activity)
+            if (activity.useAsStartupActivity()) {
+                appStartupDataCollector.startupActivityPreCreated()
+            }
         }
     }
 
     override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {
-        firstActivityInit(activity)
-        if (activity.useAsStartupActivity()) {
-            appStartupDataCollector.startupActivityInitStart()
-            val activityName = activity.localClassName
-            val callback = {
-                appStartupDataCollector.firstFrameRendered(
-                    activityName = activityName,
-                )
+        errorHandler.guardSdkCode(SdkErrorType.UiCallbackFail) {
+            firstActivityInit(activity)
+            if (activity.useAsStartupActivity()) {
+                appStartupDataCollector.startupActivityInitStart()
+                val activityName = activity.localClassName
+                val callback = {
+                    appStartupDataCollector.firstFrameRendered(
+                        activityName = activityName,
+                    )
+                }
+                drawEventEmitter?.registerFirstDrawCallback(activity, {}, callback)
             }
-            drawEventEmitter?.registerFirstDrawCallback(activity, {}, callback)
         }
     }
 
     override fun onActivityPostCreated(activity: Activity, savedInstanceState: Bundle?) {
-        if (activity.useAsStartupActivity()) {
-            appStartupDataCollector.startupActivityPostCreated()
+        errorHandler.guardSdkCode(SdkErrorType.UiCallbackFail) {
+            if (activity.useAsStartupActivity()) {
+                appStartupDataCollector.startupActivityPostCreated()
+            }
         }
     }
 
     override fun onActivityStarted(activity: Activity) {
-        if (activity.isStartupActivity()) {
-            appStartupDataCollector.startupActivityInitEnd()
+        errorHandler.guardSdkCode(SdkErrorType.UiCallbackFail) {
+            if (activity.isStartupActivity()) {
+                appStartupDataCollector.startupActivityInitEnd()
+            }
         }
     }
 
     override fun onActivityResumed(activity: Activity) {
-        if (activity.observeForStartup()) {
-            appStartupDataCollector.startupActivityResumed(
-                activityName = activity.localClassName,
-            )
+        errorHandler.guardSdkCode(SdkErrorType.UiCallbackFail) {
+            if (activity.observeForStartup()) {
+                appStartupDataCollector.startupActivityResumed(
+                    activityName = activity.localClassName,
+                )
+            }
         }
     }
 
@@ -125,10 +138,14 @@ class StartupTracker(
     override fun close() {
         synchronized(lock) {
             startupDataCollectionComplete.set(true)
+            errorHandler.guardSdkCode(SdkErrorType.ResourceCloseFail) { drawEventEmitter?.close() }
+            errorHandler.guardSdkCode(SdkErrorType.ResourceCloseFail) { (activityLoadEventEmitter as? AutoCloseable)?.close() }
             val application = application ?: return
-            runCatching { application.unregisterActivityLifecycleCallbacks(this) }
+            errorHandler.guardSdkCode(SdkErrorType.ResourceCloseFail) { application.unregisterActivityLifecycleCallbacks(this) }
             if (activityLoadEventEmitter != null) {
-                runCatching { application.unregisterActivityLifecycleCallbacks(activityLoadEventEmitter) }
+                errorHandler.guardSdkCode(SdkErrorType.ResourceCloseFail) {
+                    application.unregisterActivityLifecycleCallbacks(activityLoadEventEmitter)
+                }
             }
         }
     }

@@ -1,6 +1,6 @@
 package io.embrace.android.embracesdk.internal.delivery.execution
 
-import io.embrace.android.embracesdk.fakes.FakeInternalLogger
+import io.embrace.android.embracesdk.fakes.FakeErrorHandler
 import io.embrace.android.embracesdk.internal.delivery.PayloadType
 import io.embrace.android.embracesdk.internal.delivery.SupportedEnvelopeType
 import okhttp3.Headers.Companion.toHeaders
@@ -14,7 +14,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
-import java.net.SocketTimeoutException
+import java.io.IOException
 import java.net.UnknownHostException
 import java.util.concurrent.TimeUnit
 
@@ -22,7 +22,7 @@ class OkHttpRequestExecutionServiceTest {
     private lateinit var requestExecutionService: OkHttpRequestExecutionService
     private lateinit var server: MockWebServer
     private lateinit var testServerUrl: String
-    private lateinit var logger: FakeInternalLogger
+    private lateinit var errorHandler: FakeErrorHandler
     private lateinit var client: OkHttpClient
 
     private val testAppId = "test_app_id"
@@ -46,7 +46,7 @@ class OkHttpRequestExecutionServiceTest {
 
     @Before
     fun setUp() {
-        logger = FakeInternalLogger()
+        errorHandler = FakeErrorHandler()
         server = MockWebServer().apply {
             protocols = listOf(Protocol.HTTP_2, Protocol.HTTP_1_1)
             start()
@@ -64,7 +64,7 @@ class OkHttpRequestExecutionServiceTest {
             lazyDeviceId = lazy { testDeviceId },
             appId = testAppId,
             embraceVersionName = testEmbraceVersionName,
-            logger = logger,
+            errorHandler = errorHandler,
         )
     }
 
@@ -82,7 +82,7 @@ class OkHttpRequestExecutionServiceTest {
             lazyDeviceId = lazy { testDeviceId },
             appId = testAppId,
             embraceVersionName = testEmbraceVersionName,
-            logger = logger,
+            errorHandler = errorHandler,
         )
 
         // when attempting to make a request
@@ -151,9 +151,9 @@ class OkHttpRequestExecutionServiceTest {
     }
 
     @Test
-    fun `return incomplete with no internal error logged if the execution throws IOException`() {
-        // given a server that times out
-        server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
+    fun `return incomplete with no SDK error logged if the execution throws IOException`() {
+        // given a server that drops the connection
+        server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AT_START))
 
         // when attempting to make a request
         val result = requestExecutionService.attemptHttpRequest(
@@ -165,8 +165,8 @@ class OkHttpRequestExecutionServiceTest {
         // then the result should be incomplete
         check(result is ExecutionResult.Incomplete)
         assertTrue(result.retry)
-        assertTrue(result.exception is SocketTimeoutException)
-        assertEquals(0, logger.internalErrorMessages.size)
+        assertTrue(result.exception is IOException)
+        assertEquals(0, errorHandler.sdkErrorMessages.size)
     }
 
     @Test
@@ -206,7 +206,7 @@ class OkHttpRequestExecutionServiceTest {
             lazyDeviceId = lazy { testDeviceId },
             appId = testAppId,
             embraceVersionName = testEmbraceVersionName,
-            logger = logger,
+            errorHandler = errorHandler,
         )
         try {
             repeat(2) {

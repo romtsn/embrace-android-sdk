@@ -1,9 +1,8 @@
 package io.embrace.android.embracesdk.internal.instance
 
 import android.app.Activity
-import androidx.test.ext.junit.runners.AndroidJUnit4
 import io.embrace.android.embracesdk.PropertyScope
-import io.embrace.android.embracesdk.fakes.FakeInternalLogger
+import io.embrace.android.embracesdk.fakes.FakeErrorHandler
 import io.embrace.android.embracesdk.fakes.FakeInternalTelemetryService
 import io.embrace.android.embracesdk.internal.EmbraceInternalApi
 import io.embrace.android.embracesdk.internal.InternalInterfaceApi
@@ -18,23 +17,50 @@ import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Before
 import org.junit.Test
-import org.junit.runner.RunWith
-import org.robolectric.Robolectric
 import java.lang.reflect.Proxy
 
-@RunWith(AndroidJUnit4::class)
 internal class SdkApiDispatcherTest {
 
     private val calls = mutableListOf<String>()
     private lateinit var telemetryService: FakeInternalTelemetryService
-    private lateinit var logger: FakeInternalLogger
+    private lateinit var errorHandler: FakeErrorHandler
     private lateinit var sdk: SdkApiDispatcher
 
     @Before
     fun setUp() {
         telemetryService = FakeInternalTelemetryService()
-        logger = FakeInternalLogger(throwOnInternalError = false)
-        sdk = SdkApiDispatcher(recordingSdkApi(calls), telemetryService, logger)
+        errorHandler = FakeErrorHandler(throwOnSdkError = false)
+        sdk = SdkApiDispatcher(
+            recordingSdkApi(calls),
+            telemetryService,
+            errorHandler,
+            onStart = { calls += "onStart" },
+            onDisable = { calls += "onDisable" },
+        )
+    }
+
+    @Test
+    fun `lifecycle calls do not reach the target`() {
+        sdk.start(Activity())
+        sdk.disable()
+        assertEquals(listOf("onStart", "onDisable"), calls)
+    }
+
+    @Test
+    fun `lifecycle callback exceptions are reported`() {
+        val dispatcher = SdkApiDispatcher(
+            recordingSdkApi(calls),
+            telemetryService,
+            errorHandler,
+            onStart = { error("start failed") },
+            onDisable = { error("disable failed") },
+        )
+        dispatcher.start(Activity())
+        dispatcher.disable()
+        assertEquals(
+            listOf("start failed", "disable failed"),
+            errorHandler.sdkErrorMessages.map { it.throwable?.message },
+        )
     }
 
     @Test
@@ -56,7 +82,7 @@ internal class SdkApiDispatcherTest {
 
     @Test
     fun `members with default bodies are forwarded rather than expanded`() {
-        val activity = Robolectric.buildActivity(Activity::class.java).get()
+        val activity = Activity()
         sdk.trackExperiment("exp")
         sdk.untrackExperiment("exp")
         sdk.trackFeatureFlag("flag")
@@ -121,7 +147,7 @@ internal class SdkApiDispatcherTest {
         assertFalse(sdk.startView("view"))
         assertSame(NoopEmbraceSdkSpan, sdk.startSpan("span"))
         assertEquals("", sdk.deviceId)
-        assertEquals(4, logger.internalErrorMessages.size)
+        assertEquals(4, errorHandler.sdkErrorMessages.size)
     }
 
     @Test
@@ -136,7 +162,7 @@ internal class SdkApiDispatcherTest {
     fun `user code runs when recordSpan throws before invoking it`() {
         sdk.target = throwingSdkApi()
         assertEquals("result", sdk.recordSpan("span") { "result" })
-        assertEquals(1, logger.internalErrorMessages.size)
+        assertEquals(1, errorHandler.sdkErrorMessages.size)
     }
 
     @Test
@@ -149,7 +175,7 @@ internal class SdkApiDispatcherTest {
         }
         assertEquals("result", result)
         assertEquals(1, invocations)
-        assertEquals("sdk failure", logger.internalErrorMessages.single().throwable?.message)
+        assertEquals("sdk failure", errorHandler.sdkErrorMessages.single().throwable?.message)
     }
 
     @Test
@@ -157,12 +183,12 @@ internal class SdkApiDispatcherTest {
         sdk.target = RecordSpanSdkApi { code -> code() }
         val exc = IllegalArgumentException("user failure")
         assertSame(exc, assertThrows(IllegalArgumentException::class.java) { sdk.recordSpan("span") { throw exc } })
-        assertEquals(emptyList<FakeInternalLogger.LogMessage>(), logger.internalErrorMessages)
+        assertEquals(emptyList<FakeErrorHandler.LogMessage>(), errorHandler.sdkErrorMessages)
     }
 
     private class RecordSpanSdkApi(
         private val impl: (() -> Any?) -> Any?,
-    ) : InternalSdkApi by throwingSdkApi() {
+    ) : SdkInstance by throwingSdkApi() {
         @Suppress("UNCHECKED_CAST")
         override fun <T> recordSpan(
             name: String,
@@ -175,20 +201,20 @@ internal class SdkApiDispatcherTest {
     }
 }
 
-private fun throwingSdkApi(): InternalSdkApi = Proxy.newProxyInstance(
-    InternalSdkApi::class.java.classLoader,
-    arrayOf(InternalSdkApi::class.java),
+private fun throwingSdkApi(): SdkInstance = Proxy.newProxyInstance(
+    SdkInstance::class.java.classLoader,
+    arrayOf(SdkInstance::class.java),
 ) { _, method, _ ->
     throw IllegalStateException(method.name)
-} as InternalSdkApi
+} as SdkInstance
 
 /**
- * An [InternalSdkApi] that records each call as `name/argumentCount`, so that overloads are told apart. Internal
+ * An [SdkInstance] that records each call as `name/argumentCount`, so that overloads are told apart. Internal
  * interfaces are served by [NoopInternalInterfaceApi].
  */
-internal fun recordingSdkApi(calls: MutableList<String>, prefix: String = ""): InternalSdkApi = Proxy.newProxyInstance(
-    InternalSdkApi::class.java.classLoader,
-    arrayOf(InternalSdkApi::class.java),
+internal fun recordingSdkApi(calls: MutableList<String>, prefix: String = ""): SdkInstance = Proxy.newProxyInstance(
+    SdkInstance::class.java.classLoader,
+    arrayOf(SdkInstance::class.java),
 ) { _, method, _ ->
     calls += "$prefix${method.name}/${method.parameterCount}"
     when {
@@ -196,4 +222,4 @@ internal fun recordingSdkApi(calls: MutableList<String>, prefix: String = ""): I
         method.returnType == Boolean::class.javaPrimitiveType -> false
         else -> null
     }
-} as InternalSdkApi
+} as SdkInstance

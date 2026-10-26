@@ -1,7 +1,7 @@
 package io.embrace.android.embracesdk.internal.session.orchestrator
 
 import android.app.ActivityManager
-import androidx.test.ext.junit.runners.AndroidJUnit4
+import android.app.Application
 import io.embrace.android.embracesdk.concurrency.BlockingScheduledExecutorService
 import io.embrace.android.embracesdk.fakes.FakeClock
 import io.embrace.android.embracesdk.fakes.FakeConfigService
@@ -9,7 +9,7 @@ import io.embrace.android.embracesdk.fakes.FakeCurrentSessionPartSpan
 import io.embrace.android.embracesdk.fakes.FakeDataSource
 import io.embrace.android.embracesdk.fakes.FakeEnvelopeMetadataSource
 import io.embrace.android.embracesdk.fakes.FakeEnvelopeResourceSource
-import io.embrace.android.embracesdk.fakes.FakeInternalLogger
+import io.embrace.android.embracesdk.fakes.FakeErrorHandler
 import io.embrace.android.embracesdk.fakes.FakeInternalTelemetryService
 import io.embrace.android.embracesdk.fakes.FakeKeyValueStore
 import io.embrace.android.embracesdk.fakes.FakeLogEnvelopeSource
@@ -23,7 +23,6 @@ import io.embrace.android.embracesdk.fakes.FakeTelemetryDestination
 import io.embrace.android.embracesdk.fakes.FakeUserSessionPropertiesService
 import io.embrace.android.embracesdk.fakes.TestUuidSource
 import io.embrace.android.embracesdk.fakes.behavior.FakeUserSessionBehavior
-import io.embrace.android.embracesdk.fakes.injection.FakePayloadSourceModule
 import io.embrace.android.embracesdk.internal.arch.InstrumentationRegistry
 import io.embrace.android.embracesdk.internal.arch.InstrumentationRegistryImpl
 import io.embrace.android.embracesdk.internal.arch.startup.StartupClassifierImpl
@@ -38,7 +37,7 @@ import io.embrace.android.embracesdk.internal.config.resolved.EmbraceConfig
 import io.embrace.android.embracesdk.internal.config.resolved.PersistenceConfig
 import io.embrace.android.embracesdk.internal.delivery.caching.PayloadCachingService
 import io.embrace.android.embracesdk.internal.delivery.caching.PayloadCachingServiceImpl
-import io.embrace.android.embracesdk.internal.logging.InternalErrorType
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
 import io.embrace.android.embracesdk.internal.otel.spans.EmbraceSdkSpan
 import io.embrace.android.embracesdk.internal.session.LifeEventType
 import io.embrace.android.embracesdk.internal.session.UserSessionMetadata
@@ -70,13 +69,10 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
-import org.junit.runner.RunWith
-import org.robolectric.RuntimeEnvironment
 import java.io.File
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 
-@RunWith(AndroidJUnit4::class)
 internal class SessionOrchestratorTest {
 
     private lateinit var orchestrator: SessionOrchestratorImpl
@@ -93,7 +89,7 @@ internal class SessionOrchestratorTest {
     private lateinit var inactivityWorkerExecutor: BlockingScheduledExecutorService
     private lateinit var instrumentationRegistry: InstrumentationRegistry
     private lateinit var fakeDataSource: FakeDataSource
-    private lateinit var logger: FakeInternalLogger
+    private lateinit var errorHandler: FakeErrorHandler
     private lateinit var startupClassifier: StartupClassifierImpl
     private lateinit var currentSessionPartSpan: FakeCurrentSessionPartSpan
     private lateinit var destination: FakeTelemetryDestination
@@ -110,7 +106,7 @@ internal class SessionOrchestratorTest {
     @Before
     fun setUp() {
         clock = FakeClock()
-        logger = FakeInternalLogger(throwOnInternalError = false)
+        errorHandler = FakeErrorHandler(throwOnSdkError = false)
         startupClassifier = StartupClassifierImpl()
         sessionsDir = tempFolder.newFolder("embrace_sessions_split")
     }
@@ -493,6 +489,31 @@ internal class SessionOrchestratorTest {
     }
 
     @Test
+    fun `user session last activity time keeps updating after an update fails`() {
+        var failWrites = false
+        val backing = FakeKeyValueStore()
+        val flakyStore = UserSessionMetadataStore(
+            object : KeyValueStore by backing {
+                override fun editAndCommit(action: KeyValueStoreEditor.() -> Unit) {
+                    check(!failWrites) { "simulated write failure" }
+                    backing.editAndCommit(action)
+                }
+            },
+        )
+        createOrchestrator(startingProcessState = ProcessState.FOREGROUND, metadataStoreOverride = flakyStore)
+
+        failWrites = true
+        clock.tick(61_000)
+        inactivityWorkerExecutor.runCurrentlyBlocked()
+
+        failWrites = false
+        clock.tick(61_000)
+        inactivityWorkerExecutor.runCurrentlyBlocked()
+        assertEquals(clock.now(), activeUserSession().lastActivityMs)
+        assertEquals(listOf(SdkErrorType.UserSessionTimerFail.toString()), errorHandler.sdkErrorMessages.map { it.msg })
+    }
+
+    @Test
     fun `user session last activity time does not update when app in the background`() {
         createOrchestrator(
             startingProcessState = ProcessState.FOREGROUND,
@@ -837,9 +858,9 @@ internal class SessionOrchestratorTest {
         val session = activeUserSession()
         assertNotEquals("future-id", session.userSessionId)
 
-        val errors = logger.internalErrorMessages
+        val errors = errorHandler.sdkErrorMessages
         assertEquals(1, errors.size)
-        assertEquals(InternalErrorType.ClockBackwardsShift.toString(), errors[0].msg)
+        assertEquals(SdkErrorType.ClockBackwardsShift.toString(), errors[0].msg)
     }
 
     @Test
@@ -861,9 +882,9 @@ internal class SessionOrchestratorTest {
         assertEquals(1, second.partIndex)
         assertEquals(true, second.isBackgroundOnly)
 
-        val errors = logger.internalErrorMessages
+        val errors = errorHandler.sdkErrorMessages
         assertEquals(1, errors.size)
-        assertEquals(InternalErrorType.ClockBackwardsShift.toString(), errors[0].msg)
+        assertEquals(SdkErrorType.ClockBackwardsShift.toString(), errors[0].msg)
     }
 
     @Test
@@ -976,7 +997,7 @@ internal class SessionOrchestratorTest {
         assertEquals(sessionTracker.getActiveSessionPartId(), directory.sessionPartId)
         assertEquals(activeUserSession().userSessionId, directory.userSessionId)
         assertEquals(orchestratorStartTimeMs, directory.timestamp)
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -995,7 +1016,7 @@ internal class SessionOrchestratorTest {
         val directories = sessionPartDirs()
         assertEquals(partIds, directories.map(SessionPartDirectory::sessionPartId))
         assertEquals(3, directories.map(SessionPartDirectory::dirName).distinct().size)
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -1005,7 +1026,7 @@ internal class SessionOrchestratorTest {
         orchestrator.onBackground()
 
         assertEquals(emptyList<SessionPartDirectory>(), sessionPartDirs())
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -1018,7 +1039,7 @@ internal class SessionOrchestratorTest {
         orchestrator.onBackground()
 
         assertEquals(listOf(initial), sessionPartDirs())
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -1030,7 +1051,7 @@ internal class SessionOrchestratorTest {
         orchestrator.handleCrash("crash-id")
 
         assertEquals(listOf(initial), partDirs())
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -1043,7 +1064,7 @@ internal class SessionOrchestratorTest {
 
         assertEquals(clock.now().millisToNanos(), sessionSpanIn(first)?.end_time_unix_nano)
         assertNull(sessionSpanIn(second)?.end_time_unix_nano)
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -1054,7 +1075,7 @@ internal class SessionOrchestratorTest {
         orchestrator.handleCrash("crash-id")
 
         assertEquals(clock.now().millisToNanos(), sessionSpanOnDisk(sessionPartId)?.end_time_unix_nano)
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -1067,7 +1088,7 @@ internal class SessionOrchestratorTest {
 
         assertNull(sessionTracker.getActiveSessionPartId())
         assertEquals(clock.now().millisToNanos(), sessionSpanIn(sessionPartId)?.end_time_unix_nano)
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -1079,7 +1100,7 @@ internal class SessionOrchestratorTest {
 
         assertEquals(emptyList<Any>(), store.storedSessionPartPayloads)
         assertTrue(sessionPartDirs().any { it.sessionPartId == sessionPartId })
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -1092,7 +1113,7 @@ internal class SessionOrchestratorTest {
         assertEquals(0, payloadCollator.finalEnvelopeCount)
         assertEquals(1, payloadCollator.endedWithoutEnvelopeCount)
         assertEquals(clock.now().millisToNanos(), sessionSpanIn(sessionPartId)?.end_time_unix_nano)
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -1104,7 +1125,7 @@ internal class SessionOrchestratorTest {
         assertEquals(1, payloadCollator.finalEnvelopeCount)
         assertEquals(0, payloadCollator.endedWithoutEnvelopeCount)
         assertEquals(1, store.storedSessionPartPayloads.size)
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -1116,7 +1137,7 @@ internal class SessionOrchestratorTest {
         sessionCacheExecutor.runCurrentlyBlocked()
 
         assertEquals(emptyList<Any>(), store.cachedSessionPartPayloads)
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     private fun createOrchestrator(
@@ -1132,18 +1153,17 @@ internal class SessionOrchestratorTest {
         currentSessionPartSpan = FakeCurrentSessionPartSpan(clock).apply { initializeService(clock.now()) }
         destination = FakeTelemetryDestination()
         payloadCollator = FakePayloadMessageCollator(currentSessionPartSpan = currentSessionPartSpan)
-        val payloadSourceModule = FakePayloadSourceModule()
-        logEnvelopeSource = payloadSourceModule.logEnvelopeSource
+        logEnvelopeSource = FakeLogEnvelopeSource()
         payloadFactory = PayloadFactoryImpl(
             payloadMessageCollator = payloadCollator,
-            logEnvelopeSource = payloadSourceModule.logEnvelopeSource,
+            logEnvelopeSource = logEnvelopeSource,
             configService = configService,
-            logger = logger,
+            errorHandler = errorHandler,
         )
         userSessionPropertiesService = FakeUserSessionPropertiesService()
         sessionTracker = SessionPartTrackerImpl(
             activityManager = lazyOf<ActivityManager?>(null),
-            logger = logger,
+            errorHandler = errorHandler,
         )
         sessionCacheExecutor = BlockingScheduledExecutorService(clock, true)
         inactivityWorkerExecutor = BlockingScheduledExecutorService(clock, true)
@@ -1151,7 +1171,7 @@ internal class SessionOrchestratorTest {
         payloadCachingService = PayloadCachingServiceImpl(
             PeriodicSessionPartCacher(
                 BackgroundWorker(sessionCacheExecutor),
-                logger,
+                errorHandler,
             ),
             clock,
             object : SessionIdsProvider {
@@ -1162,9 +1182,9 @@ internal class SessionOrchestratorTest {
             },
             store,
         )
-        fakeDataSource = FakeDataSource(RuntimeEnvironment.getApplication())
+        fakeDataSource = FakeDataSource(Application())
         instrumentationRegistry = InstrumentationRegistryImpl(
-            logger,
+            errorHandler,
         ).apply {
             add { fakeDataSource }
         }
@@ -1175,7 +1195,7 @@ internal class SessionOrchestratorTest {
             configService,
             TestUuidSource(),
             clock,
-            logger,
+            errorHandler,
             FakeEnvelopeResourceSource(),
             FakeEnvelopeMetadataSource(),
             currentSessionPartSpan,
@@ -1209,7 +1229,7 @@ internal class SessionOrchestratorTest {
             ordinalStoreOverride ?: FakeOrdinalStore(),
             keyValueStoreOverride ?: FakeKeyValueStore(),
             metadataStoreOverride ?: UserSessionMetadataStore(FakeKeyValueStore()),
-            logger,
+            errorHandler,
             BackgroundWorker(inactivityWorkerExecutor),
             TestUuidSource(),
             startupClassifier,
@@ -2037,8 +2057,8 @@ internal class SessionOrchestratorTest {
     private fun isSessionSpan(span: SpanProto): Boolean =
         span.attributes.any { it.key == "emb.type" && it.value_ == "ux.session" }
 
-    private fun assertNoInternalErrors() {
-        assertEquals(emptyList<FakeInternalLogger.LogMessage>(), logger.internalErrorMessages)
+    private fun assertNoSdkErrors() {
+        assertEquals(emptyList<FakeErrorHandler.LogMessage>(), errorHandler.sdkErrorMessages)
     }
 
     private fun activeUserSession(): UserSessionMetadata = checkNotNull(orchestrator.currentUserSession())

@@ -9,18 +9,19 @@ import io.embrace.android.embracesdk.fakes.FakeActivityLifecycleListener
 import io.embrace.android.embracesdk.fakes.FakeAppStartupDataCollector
 import io.embrace.android.embracesdk.fakes.FakeClock
 import io.embrace.android.embracesdk.fakes.FakeDrawEventEmitter
-import io.embrace.android.embracesdk.fakes.FakeInternalLogger
+import io.embrace.android.embracesdk.fakes.FakeErrorHandler
 import io.embrace.android.embracesdk.fakes.FakeSplashScreenActivity
 import io.embrace.android.embracesdk.internal.instrumentation.startup.StartupTracker
 import io.embrace.android.embracesdk.internal.instrumentation.startup.asDispatchedOn
 import io.embrace.android.embracesdk.internal.instrumentation.startup.ui.hasRenderEvent
-import io.embrace.android.embracesdk.internal.logging.InternalLogger
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
 import io.embrace.android.embracesdk.internal.utils.BuildVersionChecker
 import io.embrace.android.embracesdk.internal.utils.VersionChecker
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -33,7 +34,7 @@ internal class StartupTrackerTest {
     private lateinit var application: Application
     private lateinit var clock: FakeClock
     private lateinit var dataCollector: FakeAppStartupDataCollector
-    private lateinit var logger: InternalLogger
+    private lateinit var errorHandler: ErrorHandler
     private lateinit var activityLifecycleListener: FakeActivityLifecycleListener
     private lateinit var drawEventEmitter: FakeDrawEventEmitter
     private lateinit var startupTracker: StartupTracker
@@ -44,7 +45,7 @@ internal class StartupTrackerTest {
     fun setUp() {
         application = RuntimeEnvironment.getApplication()
         clock = FakeClock()
-        logger = FakeInternalLogger()
+        errorHandler = FakeErrorHandler()
         dataCollector = FakeAppStartupDataCollector(clock = clock)
         activityLifecycleListener = FakeActivityLifecycleListener()
         drawEventEmitter = FakeDrawEventEmitter()
@@ -52,6 +53,7 @@ internal class StartupTrackerTest {
             appStartupDataCollector = dataCollector,
             activityLoadEventEmitter = activityLifecycleListener,
             drawEventEmitter = drawEventEmitter,
+            errorHandler = errorHandler,
         )
         startupTracker.register(application)
         defaultActivityController = Robolectric.buildActivity(Activity::class.java)
@@ -234,6 +236,13 @@ internal class StartupTrackerTest {
         drawEventEmitter.draw(defaultActivityController.get())
         Robolectric.buildActivity(Activity::class.java).create()
         assertEquals(0, activityLifecycleListener.onCreateInvokedCount)
+    }
+
+    @Test
+    fun `closing closes the draw event emitter`() {
+        defaultActivityController.create(null)
+        startupTracker.close()
+        assertTrue(drawEventEmitter.closed)
     }
 
     private fun simulateApi(sdkInt: Int) {

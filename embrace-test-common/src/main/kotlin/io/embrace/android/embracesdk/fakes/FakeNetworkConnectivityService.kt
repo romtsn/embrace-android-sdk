@@ -12,13 +12,23 @@ class FakeNetworkConnectivityService(
 ) : NetworkConnectivityService {
 
     private val networkConnectivityListeners = CopyOnWriteArrayList<NetworkConnectivityListener>()
+    val listeners: List<NetworkConnectivityListener> get() = networkConnectivityListeners
     var connectivityStatus: ConnectivityStatus = initialConnectivityStatus
         set(value) {
             field = value
             notifyListeners()
         }
 
+    /**
+     * When set, adding a listener throws this instead.
+     */
+    var addListenerFailure: Throwable? = null
+
+    var registered: Boolean = false
+        private set
+
     override fun addNetworkConnectivityListener(listener: NetworkConnectivityListener) {
+        addListenerFailure?.let { throw it }
         networkConnectivityListeners.add(listener)
         runOnThread {
             listener.onNetworkConnectivityStatusChanged(connectivityStatus)
@@ -33,6 +43,7 @@ class FakeNetworkConnectivityService(
     }
 
     override fun register() {
+        registered = true
     }
 
     private fun notifyListeners() {

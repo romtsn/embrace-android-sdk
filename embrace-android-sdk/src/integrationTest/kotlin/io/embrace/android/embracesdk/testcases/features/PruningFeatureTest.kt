@@ -28,7 +28,7 @@ internal class PruningFeatureTest(
     @JvmField
     val testRule: SdkIntegrationTestRule = SdkIntegrationTestRule(otelSdkMode) {
         EmbraceSetupInterface(payloadStorageLimit = STORAGE_LIMIT).apply {
-            getEmbLogger().throwOnInternalError = false
+            getFakeErrorHandler().throwOnSdkError = false
         }
     }
 
@@ -67,9 +67,9 @@ internal class PruningFeatureTest(
      * pruning logic.
      */
     private fun EmbraceActionInterface.submitNetworkChange() {
-        val workerThreadModule = testRule.moduleGraph.workerThreadModule
+        val workerThreadPool = testRule.services.workerThreadPool
         val worker =
-            workerThreadModule.priorityWorker<StoredTelemetryMetadata>(DataPersistenceWorker)
+            workerThreadPool.priorityWorker<StoredTelemetryMetadata>(DataPersistenceWorker)
         worker.submit(fakeSessionStoredTelemetryMetadata) {
             simulateConnectionTypeChange(ConnectionType.WIFI)
         }

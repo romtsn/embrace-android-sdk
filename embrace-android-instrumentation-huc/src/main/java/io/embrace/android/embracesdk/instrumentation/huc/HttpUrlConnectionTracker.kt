@@ -20,6 +20,7 @@ import javax.net.ssl.HttpsURLConnection
  */
 @InternalApi
 internal object HttpUrlConnectionTracker {
+    @Volatile
     private var internalNetworkApi: InternalNetworkApi = NoopInternalNetworkApi
     private val factoryField: Field
         /**
@@ -65,6 +66,13 @@ internal object HttpUrlConnectionTracker {
     fun getInternalNetworkApi(): InternalNetworkApi = internalNetworkApi
 
     /**
+     * Stops capture by connections opened after this call.
+     */
+    fun reset() {
+        internalNetworkApi = NoopInternalNetworkApi
+    }
+
+    /**
      * Registers either a [EmbraceUrlStreamHandlerFactory] or a [WrappingFactory]
      * depending on whether or not an existing factory has already been registered.
      *
@@ -89,11 +97,11 @@ internal object HttpUrlConnectionTracker {
         } catch (ex: Throwable) {
             // Catching Throwable as URL.setURLStreamHandlerFactory throws an Error which we want to
             // handle, rather than kill the application if we are unable to swap the factory.
-            internalNetworkApi.logInternalError(ex)
+            internalNetworkApi.logSdkError(ex)
             try {
                 URL.setURLStreamHandlerFactory(EmbraceUrlStreamHandlerFactory())
             } catch (ex2: Throwable) {
-                internalNetworkApi.logInternalError(ex2)
+                internalNetworkApi.logSdkError(ex2)
             }
         }
     }
@@ -128,7 +136,7 @@ internal object HttpUrlConnectionTracker {
             try {
                 parentHandler = parent.createURLStreamHandler(protocol)
             } catch (ex: Exception) {
-                internalNetworkApi.logInternalError(ex)
+                internalNetworkApi.logSdkError(ex)
                 return EmbraceUrlStreamHandlerFactory().createURLStreamHandler(protocol)
             }
             if (parentHandler == null) {
@@ -151,7 +159,7 @@ internal object HttpUrlConnectionTracker {
                         val parentConnection = method.invoke(parentHandler, url, proxy) as URLConnection?
                         return wrapConnection(parentConnection)
                     } catch (ex: Exception) {
-                        internalNetworkApi.logInternalError(ex)
+                        internalNetworkApi.logSdkError(ex)
                         throw propagate(ex)
                     }
                 }
@@ -169,7 +177,7 @@ internal object HttpUrlConnectionTracker {
                         val parentConnection = method.invoke(parentHandler, url) as URLConnection?
                         return wrapConnection(parentConnection)
                     } catch (ex: Exception) {
-                        internalNetworkApi.logInternalError(ex)
+                        internalNetworkApi.logSdkError(ex)
                         throw propagate(ex)
                     }
                 }
@@ -218,7 +226,7 @@ internal object HttpUrlConnectionTracker {
                     handlers.put(PROTOCOL_HTTP, EmbraceHttpUrlStreamHandler(newUrlStreamHandler(CLASS_HTTP_OKHTTP_STREAM_HANDLER)))
                     handlers.put(PROTOCOL_HTTPS, EmbraceHttpsUrlStreamHandler(newUrlStreamHandler(CLASS_HTTPS_OKHTTP_STREAM_HANDLER)))
                 } catch (ex: Exception) {
-                    internalNetworkApi.logInternalError(ex)
+                    internalNetworkApi.logSdkError(ex)
                 }
             }
 
@@ -228,7 +236,7 @@ internal object HttpUrlConnectionTracker {
                 } catch (e: Exception) {
                     // We catch Exception here instead of the specific exceptions that can be thrown due to a change in the way some
                     // of these exceptions are compiled on different OS versions.
-                    internalNetworkApi.logInternalError(e)
+                    internalNetworkApi.logSdkError(e)
                     return null
                 }
             }

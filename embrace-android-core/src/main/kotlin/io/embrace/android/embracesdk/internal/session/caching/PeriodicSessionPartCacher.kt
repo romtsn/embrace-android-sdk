@@ -1,7 +1,8 @@
 package io.embrace.android.embracesdk.internal.session.caching
 
-import io.embrace.android.embracesdk.internal.logging.InternalErrorType
-import io.embrace.android.embracesdk.internal.logging.InternalLogger
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
+import io.embrace.android.embracesdk.internal.logging.guardSdkCode
 import io.embrace.android.embracesdk.internal.payload.Envelope
 import io.embrace.android.embracesdk.internal.payload.SessionPartPayload
 import io.embrace.android.embracesdk.internal.utils.EmbTrace
@@ -12,7 +13,7 @@ import java.util.concurrent.TimeUnit
 
 class PeriodicSessionPartCacher(
     private val worker: BackgroundWorker,
-    private val logger: InternalLogger,
+    private val errorHandler: ErrorHandler,
     private val intervalMs: Long = 2000,
 ) {
 
@@ -39,11 +40,7 @@ class PeriodicSessionPartCacher(
             return@Runnable
         }
         EmbTrace.trace("sf-periodic-cache-tick") {
-            try {
-                provider()
-            } catch (ex: Exception) {
-                logger.trackInternalError(InternalErrorType.PeriodicSessionCacheFail, ex)
-            }
+            errorHandler.guardSdkCode(SdkErrorType.PeriodicSessionCacheFail, null, provider)
         }
     }
 

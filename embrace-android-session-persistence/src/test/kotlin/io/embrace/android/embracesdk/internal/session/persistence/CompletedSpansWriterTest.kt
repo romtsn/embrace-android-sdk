@@ -1,7 +1,7 @@
 package io.embrace.android.embracesdk.internal.session.persistence
 
 import io.embrace.android.embracesdk.fakes.FakeClock
-import io.embrace.android.embracesdk.fakes.FakeInternalLogger
+import io.embrace.android.embracesdk.fakes.FakeErrorHandler
 import io.embrace.android.embracesdk.internal.payload.Attribute
 import io.embrace.android.embracesdk.internal.payload.Span
 import okio.buffer
@@ -51,7 +51,7 @@ internal class CompletedSpansWriterTest {
 
     private lateinit var sessionsDir: File
     private lateinit var clock: FakeClock
-    private lateinit var logger: FakeInternalLogger
+    private lateinit var errorHandler: FakeErrorHandler
     private lateinit var writer: CompletedSpansWriter
 
     @Volatile
@@ -61,9 +61,9 @@ internal class CompletedSpansWriterTest {
     fun setUp() {
         sessionsDir = tempFolder.newFolder("embrace_sessions")
         clock = FakeClock()
-        logger = FakeInternalLogger(throwOnInternalError = false)
+        errorHandler = FakeErrorHandler(throwOnSdkError = false)
         activePart = partDirectory
-        writer = CompletedSpansWriter(target { activePart }, logger)
+        writer = CompletedSpansWriter(target { activePart }, errorHandler)
         createPartDir(partDirectory)
     }
 
@@ -71,7 +71,7 @@ internal class CompletedSpansWriterTest {
     fun `the completed spans are written into the session part directory`() {
         assertTrue(write())
         assertTrue(logFile().isFile)
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -105,14 +105,14 @@ internal class CompletedSpansWriterTest {
             readLog().map { it.span_id },
         )
         assertEquals(clock.now(), decodeLog().lastWrittenMs)
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
     fun `an empty list creates no log at all`() {
         assertTrue(write(spans = emptyList()))
         assertFalse(logFile().exists())
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -120,7 +120,7 @@ internal class CompletedSpansWriterTest {
         write()
         assertTrue(writer.write(emptyList()))
         assertEquals(listOf(fullyPopulatedSpanProto), readLog())
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -134,7 +134,7 @@ internal class CompletedSpansWriterTest {
     fun `nothing is written when no session part is active`() {
         assertFalse(write(directory = null))
         assertFalse(logFile().exists())
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -143,7 +143,7 @@ internal class CompletedSpansWriterTest {
         activePart = null
         assertFalse(writer.write(listOf(span("aaaaaaaaaaaaaaa9"))))
         assertEquals(listOf(fullyPopulatedSpanProto), readLog())
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -168,7 +168,7 @@ internal class CompletedSpansWriterTest {
         assertTrue(write(other, listOf(span("aaaaaaaaaaaaaaa9"))))
         assertEquals("aaaaaaaaaaaaaaa1", readLog().single().span_id)
         assertEquals("aaaaaaaaaaaaaaa9", readLog(other).single().span_id)
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -199,7 +199,7 @@ internal class CompletedSpansWriterTest {
 
     @Test
     fun `a failing session part source is reported and does not throw`() {
-        writer = CompletedSpansWriter(target { error("boom") }, logger)
+        writer = CompletedSpansWriter(target { error("boom") }, errorHandler)
         assertFalse(writer.write(completed))
         assertEquals(emptyList<String>(), partDir().list()?.toList())
         assertWriteFailureTracked()
@@ -247,7 +247,7 @@ internal class CompletedSpansWriterTest {
         assertTrue(write(spans = listOf(span("aaaaaaaaaaaaaaa1"))))
         assertTrue(write(spans = listOf(span("aaaaaaaaaaaaaaa2"))))
         assertEquals(twoSpanBudget, logFile().length())
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -281,6 +281,35 @@ internal class CompletedSpansWriterTest {
     }
 
     @Test
+    fun `the session span is logged past the record cap`() {
+        writer = recordCappedWriter(maxRecords = 1)
+        assertTrue(write(spans = listOf(span("aaaaaaaaaaaaaaa1"))))
+        assertTrue(write(spans = listOf(sessionSpan)))
+        assertEquals(listOf("aaaaaaaaaaaaaaa1", sessionSpan.spanId), readLog().map(SpanProto::span_id))
+        assertNoSdkErrors()
+    }
+
+    @Test
+    fun `the session span is logged when the spans batched with it pass the record cap`() {
+        writer = recordCappedWriter(maxRecords = 2)
+        assertTrue(
+            write(
+                spans = listOf(
+                    span("aaaaaaaaaaaaaaa1"),
+                    span("aaaaaaaaaaaaaaa2"),
+                    span("aaaaaaaaaaaaaaa3"),
+                    sessionSpan,
+                ),
+            ),
+        )
+        assertEquals(
+            listOf("aaaaaaaaaaaaaaa1", "aaaaaaaaaaaaaaa2", sessionSpan.spanId),
+            readLog().map(SpanProto::span_id),
+        )
+        assertWriteFailureTracked()
+    }
+
+    @Test
     fun `a log at the record cap is reported once however many appends are dropped`() {
         writer = recordCappedWriter(maxRecords = 1)
         assertTrue(write(spans = listOf(span("aaaaaaaaaaaaaaa1"))))
@@ -307,7 +336,7 @@ internal class CompletedSpansWriterTest {
 
         assertTrue(write(spans = emptyList()))
         assertEquals(twoSpanBudget, logFile().length())
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -317,7 +346,7 @@ internal class CompletedSpansWriterTest {
         assertTrue(write(spans = listOf(span("aaaaaaaaaaaaaaa2"))))
 
         assertEquals(listOf("aaaaaaaaaaaaaaa1", "aaaaaaaaaaaaaaa2"), readLog().map(SpanProto::span_id))
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -366,14 +395,14 @@ internal class CompletedSpansWriterTest {
 
         assertEquals(listOf("aaaaaaaaaaaaaaa1"), readLog().map(SpanProto::span_id))
         assertEquals(listOf("aaaaaaaaaaaaaaa2"), readLog(other).map(SpanProto::span_id))
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
     fun `closing a writer that has written nothing leaves no file behind`() {
         writer.close()
         assertEquals(emptyList<String>(), partDir().list()?.toList())
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -387,7 +416,7 @@ internal class CompletedSpansWriterTest {
 
         assertEquals(listOf("aaaaaaaaaaaaaaa1", "aaaaaaaaaaaaaaa3"), readLog().map(SpanProto::span_id))
         assertEquals(listOf("aaaaaaaaaaaaaaa2"), readLog(other).map(SpanProto::span_id))
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -428,14 +457,14 @@ internal class CompletedSpansWriterTest {
 
     private fun recordBoundedWriter(): CompletedSpansWriter {
         val bound = SpanCollection.ADAPTER.encodedSize(SpanCollection(spans = listOf(oversized.toProto()))) - 1L
-        return CompletedSpansWriter(target { activePart }, logger, MAX_PART_FILE_BYTES, bound)
+        return CompletedSpansWriter(target { activePart }, errorHandler, MAX_PART_FILE_BYTES, bound)
     }
 
     private fun recordCappedWriter(maxRecords: Int): CompletedSpansWriter =
-        CompletedSpansWriter(target { activePart }, logger, MAX_PART_FILE_BYTES, MAX_RECORD_BYTES, maxRecords)
+        CompletedSpansWriter(target { activePart }, errorHandler, MAX_PART_FILE_BYTES, MAX_RECORD_BYTES, maxRecords)
 
     private fun boundedWriter(): CompletedSpansWriter =
-        CompletedSpansWriter(target { activePart }, logger, twoSpanBudget)
+        CompletedSpansWriter(target { activePart }, errorHandler, twoSpanBudget)
 
     private fun target(source: () -> SessionPartDirectory?): SessionPartWriteTarget =
         SessionPartWriteTarget(
@@ -467,13 +496,13 @@ internal class CompletedSpansWriterTest {
         return writer.write(spans)
     }
 
-    private fun assertNoInternalErrors() {
-        assertEquals(emptyList<FakeInternalLogger.LogMessage>(), logger.internalErrorMessages)
+    private fun assertNoSdkErrors() {
+        assertEquals(emptyList<FakeErrorHandler.LogMessage>(), errorHandler.sdkErrorMessages)
     }
 
     private fun assertWriteFailureTracked() {
-        assertEquals(1, logger.internalErrorMessages.size)
-        assertEquals("CompletedSpansWriteFail", logger.internalErrorMessages.single().msg)
+        assertEquals(1, errorHandler.sdkErrorMessages.size)
+        assertEquals("CompletedSpansWriteFail", errorHandler.sdkErrorMessages.single().msg)
     }
 
     /**

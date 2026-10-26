@@ -10,11 +10,13 @@ import io.embrace.android.embracesdk.internal.payload.NetworkCapturedCall
 import io.embrace.android.embracesdk.internal.serialization.PlatformSerializer
 import io.embrace.android.embracesdk.internal.store.KeyValueStore
 import io.embrace.android.embracesdk.internal.telemetry.AppliedLimitType
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlin.math.max
 
-class NetworkCaptureDataSourceImpl(
+class NetworkCaptureDataSourceImpl internal constructor(
     private val args: InstrumentationArgs,
+    private val networkCaptureEncryptionManager: NetworkCaptureEncryptionManager,
 ) : NetworkCaptureDataSource, DataSourceImpl(
     args = args,
     limitStrategy = NoopLimitStrategy,
@@ -23,12 +25,20 @@ class NetworkCaptureDataSourceImpl(
 
     private val keyValueStore: KeyValueStore = args.store
     private val serializer: PlatformSerializer = args.serializer
-    private val networkCaptureEncryptionManager = NetworkCaptureEncryptionManager()
+    private val urlRegexCache = ConcurrentHashMap<String, Result<Regex>>()
+
+    constructor(args: InstrumentationArgs) : this(args, NetworkCaptureEncryptionManager())
 
     internal companion object {
         const val NETWORK_ERROR_CODE = -1
         const val NETWORK_CAPTURE_RULE_PREFIX_KEY = "io.embrace.networkcapturerule"
         private const val EMB_DATA_URL: String = "data.emb-api.com"
+    }
+
+    override fun onDataCaptureDisabled() {
+        if (networkCaptureDataSource === this) {
+            networkCaptureDataSource = null
+        }
     }
 
     override fun recordNetworkRequest(request: HttpNetworkRequest) {
@@ -161,7 +171,8 @@ class NetworkCaptureDataSourceImpl(
         val now = clock.now()
         val applicableRules = networkCaptureRules.filter { rule ->
             rule.method.contains(method) &&
-                runCatching { rule.urlRegex.toRegex().containsMatchIn(url) }.getOrDefault(false) &&
+                urlRegexCache.getOrPut(rule.urlRegex) { runCatching { rule.urlRegex.toRegex() } }
+                    .getOrNull()?.containsMatchIn(url) == true &&
                 rule.expiresIn > 0 &&
                 now < configDeliveredAt + TimeUnit.SECONDS.toMillis(rule.expiresIn)
         }.toMutableSet()

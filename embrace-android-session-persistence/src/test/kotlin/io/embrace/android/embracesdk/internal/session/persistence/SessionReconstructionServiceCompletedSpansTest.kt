@@ -1,7 +1,7 @@
 package io.embrace.android.embracesdk.internal.session.persistence
 
 import io.embrace.android.embracesdk.fakes.FakeClock
-import io.embrace.android.embracesdk.fakes.FakeInternalLogger
+import io.embrace.android.embracesdk.fakes.FakeErrorHandler
 import io.embrace.android.embracesdk.internal.payload.Span
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -57,7 +57,7 @@ internal class SessionReconstructionServiceCompletedSpansTest {
     val tempFolder: TemporaryFolder = TemporaryFolder()
 
     private lateinit var sessionsDir: File
-    private lateinit var logger: FakeInternalLogger
+    private lateinit var errorHandler: FakeErrorHandler
     private lateinit var metadataWriter: SessionMetadataWriter
     private lateinit var service: SessionReconstructionService
 
@@ -67,7 +67,7 @@ internal class SessionReconstructionServiceCompletedSpansTest {
     @Before
     fun setUp() {
         sessionsDir = tempFolder.newFolder("embrace_sessions")
-        logger = FakeInternalLogger(throwOnInternalError = false)
+        errorHandler = FakeErrorHandler(throwOnSdkError = false)
         activePart = partDirectory
         metadataWriter = SessionMetadataWriter(
             target = target(),
@@ -76,9 +76,9 @@ internal class SessionReconstructionServiceCompletedSpansTest {
             envelopeVersion = ENVELOPE_VERSION,
             envelopeType = ENVELOPE_TYPE,
             sharedLibSymbolMappingSource = { null },
-            logger = logger,
+            errorHandler = errorHandler,
         )
-        service = SessionReconstructionService(lazy { sessionsDir }, logger)
+        service = SessionReconstructionService(lazy { sessionsDir }, errorHandler)
         createPartDir(partDirectory)
     }
 
@@ -87,7 +87,7 @@ internal class SessionReconstructionServiceCompletedSpansTest {
         write(spans = listOf(endedSpanProto, secondEndedSpanProto))
         val spans = checkNotNull(service.reconstruct(partDirectory)?.envelope?.data?.spans)
         assertEquals(listOf(endedSpan, secondEndedSpan), spans)
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -95,7 +95,7 @@ internal class SessionReconstructionServiceCompletedSpansTest {
         write(spans = listOf(endedSpanProto, fullyPopulatedSpanProto))
         val spans = checkNotNull(service.reconstruct(partDirectory)?.envelope?.data?.spans)
         assertEquals(listOf(endedSpan, fullyPopulatedSpan), spans)
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -105,7 +105,7 @@ internal class SessionReconstructionServiceCompletedSpansTest {
         val payload = checkNotNull(service.reconstruct(partDirectory)?.envelope?.data)
         assertEquals(emptyList<Span>(), payload.spans)
         assertEquals(emptyList<Span>(), payload.spanSnapshots)
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -114,7 +114,7 @@ internal class SessionReconstructionServiceCompletedSpansTest {
 
         val payload = checkNotNull(service.reconstruct(partDirectory)?.envelope?.data)
         assertEquals(listOf(endedSpan), payload.spans)
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -124,7 +124,7 @@ internal class SessionReconstructionServiceCompletedSpansTest {
         val payload = checkNotNull(service.reconstruct(partDirectory)?.envelope?.data)
         assertEquals(listOf(inFlightSpan), payload.spans)
         assertEquals(emptyList<Span>(), payload.spanSnapshots)
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -141,7 +141,7 @@ internal class SessionReconstructionServiceCompletedSpansTest {
 
         assertEquals(endedSpan, service.reconstruct(partDirectory)?.envelope?.data?.spans?.first())
         assertEquals(secondEndedSpan, service.reconstruct(other)?.envelope?.data?.spans?.first())
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -151,7 +151,7 @@ internal class SessionReconstructionServiceCompletedSpansTest {
 
         val spans = checkNotNull(service.reconstruct(partDirectory)?.envelope?.data?.spans)
         assertEquals(listOf(endedSpan), spans)
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -159,7 +159,7 @@ internal class SessionReconstructionServiceCompletedSpansTest {
         write(spans = listOf(endedSpanProto))
         truncateLastByte()
         assertEquals(emptyList<Span>(), service.reconstruct(partDirectory)?.envelope?.data?.spans)
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -170,7 +170,7 @@ internal class SessionReconstructionServiceCompletedSpansTest {
 
         val spans = checkNotNull(service.reconstruct(partDirectory)?.envelope?.data?.spans)
         assertEquals(listOf(endedSpan, secondEndedSpan), spans)
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -236,7 +236,7 @@ internal class SessionReconstructionServiceCompletedSpansTest {
         val payload = checkNotNull(service.reconstruct(partDirectory)?.envelope?.data)
         assertEquals(emptyList<Span>(), payload.spans)
         assertEquals(emptyList<Span>(), payload.spanSnapshots)
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -292,12 +292,12 @@ internal class SessionReconstructionServiceCompletedSpansTest {
         )
     }
 
-    private fun assertNoInternalErrors() {
-        assertEquals(emptyList<FakeInternalLogger.LogMessage>(), logger.internalErrorMessages)
+    private fun assertNoSdkErrors() {
+        assertEquals(emptyList<FakeErrorHandler.LogMessage>(), errorHandler.sdkErrorMessages)
     }
 
     private fun assertReconstructionFailureTracked() {
-        assertEquals(1, logger.internalErrorMessages.size)
-        assertEquals("SessionReconstructionFail", logger.internalErrorMessages.single().msg)
+        assertEquals(1, errorHandler.sdkErrorMessages.size)
+        assertEquals("SessionReconstructionFail", errorHandler.sdkErrorMessages.single().msg)
     }
 }

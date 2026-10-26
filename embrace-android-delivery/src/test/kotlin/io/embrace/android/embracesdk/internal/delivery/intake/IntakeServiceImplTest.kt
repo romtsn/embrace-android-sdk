@@ -2,7 +2,7 @@ package io.embrace.android.embracesdk.internal.delivery.intake
 
 import io.embrace.android.embracesdk.concurrency.BlockableExecutorService
 import io.embrace.android.embracesdk.fakes.FakeClock
-import io.embrace.android.embracesdk.fakes.FakeInternalLogger
+import io.embrace.android.embracesdk.fakes.FakeErrorHandler
 import io.embrace.android.embracesdk.fakes.FakePayloadStorageService
 import io.embrace.android.embracesdk.fakes.FakeSchedulingService
 import io.embrace.android.embracesdk.fakes.TestPlatformSerializer
@@ -15,7 +15,7 @@ import io.embrace.android.embracesdk.internal.delivery.SupportedEnvelopeType.LOG
 import io.embrace.android.embracesdk.internal.delivery.SupportedEnvelopeType.SESSION
 import io.embrace.android.embracesdk.internal.delivery.storage.PayloadStorageServiceImpl
 import io.embrace.android.embracesdk.internal.delivery.storedTelemetryRunnableComparator
-import io.embrace.android.embracesdk.internal.logging.InternalErrorType
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
 import io.embrace.android.embracesdk.internal.payload.Envelope
 import io.embrace.android.embracesdk.internal.payload.Log
 import io.embrace.android.embracesdk.internal.payload.LogPayload
@@ -28,6 +28,7 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -53,7 +54,7 @@ class IntakeServiceImplTest {
     private lateinit var cacheStorageService: FakePayloadStorageService
     private lateinit var schedulingService: FakeSchedulingService
     private lateinit var executorService: BlockableExecutorService
-    private lateinit var logger: FakeInternalLogger
+    private lateinit var errorHandler: FakeErrorHandler
 
     private val serializer = TestPlatformSerializer()
     private val sessionEnvelope = Envelope(
@@ -99,12 +100,12 @@ class IntakeServiceImplTest {
         cacheStorageService = FakePayloadStorageService()
         schedulingService = FakeSchedulingService()
         executorService = BlockableExecutorService(blockingMode = true)
-        logger = FakeInternalLogger(false)
+        errorHandler = FakeErrorHandler(false)
         intakeService = IntakeServiceImpl(
             schedulingService,
             payloadStorageService,
             cacheStorageService,
-            logger,
+            errorHandler,
             serializer,
             PriorityWorker(executorService),
         )
@@ -119,7 +120,7 @@ class IntakeServiceImplTest {
             try {
                 take(sessionEnvelope, sessionMetadata)
             } catch (_: RejectedExecutionException) {
-                // this is an artifact of testing - WorkerThreadModule typically passes in an
+                // this is an artifact of testing - WorkerThreadPool typically passes in an
                 // executor that has a custom rejection handler
             }
         }
@@ -231,7 +232,7 @@ class IntakeServiceImplTest {
 
         // assert nothing was stored but no exception was thrown
         assertEquals(0, payloadStorageService.storedPayloadCount())
-        val throwable = logger.internalErrorMessages.single().throwable
+        val throwable = errorHandler.sdkErrorMessages.single().throwable
         assertTrue(throwable is IOException)
     }
 
@@ -256,7 +257,7 @@ class IntakeServiceImplTest {
             schedulingService,
             payloadStorageService,
             cacheStorageService,
-            logger,
+            errorHandler,
             TestPlatformSerializer(),
             worker,
         )
@@ -309,7 +310,7 @@ class IntakeServiceImplTest {
             schedulingService,
             payloadStorageService,
             cacheStorageService,
-            logger,
+            errorHandler,
             TestPlatformSerializer(),
             worker,
         )
@@ -377,7 +378,7 @@ class IntakeServiceImplTest {
         }
         assertFalse(cacheStorageService.storedFilenames().contains(snapshot2.filename))
         assertTrue(payloadStorageService.storedFilenames().contains(session.filename))
-        assertTrue(logger.internalErrorMessages.isEmpty())
+        assertTrue(errorHandler.sdkErrorMessages.isEmpty())
     }
 
     @Test
@@ -408,7 +409,7 @@ class IntakeServiceImplTest {
         }
 
         assertEquals(snapshot2.filename, cacheStorageService.storedFilenames().single())
-        assertTrue(logger.internalErrorMessages.isEmpty())
+        assertTrue(errorHandler.sdkErrorMessages.isEmpty())
     }
 
     @Test
@@ -473,7 +474,7 @@ class IntakeServiceImplTest {
     }
 
     @Test
-    fun `intake of cache request for unexpected envelope type will succeed but produce internal error`() {
+    fun `intake of cache request for unexpected envelope type will succeed but produce SDK error`() {
         executorService.blockingMode = false
         val cache1 =
             StoredTelemetryMetadata(clock.now(), UUID, PROCESS_ID, BLOB, false, PayloadType.AEI).apply {
@@ -484,7 +485,7 @@ class IntakeServiceImplTest {
             }
 
         assertEquals(cache1.filename, cacheStorageService.storedFilenames().single())
-        assertEquals(InternalErrorType.IntakeUnexpectedType.toString(), logger.internalErrorMessages.single().msg)
+        assertEquals(SdkErrorType.IntakeUnexpectedType.toString(), errorHandler.sdkErrorMessages.single().msg)
     }
 
     @Test
@@ -810,6 +811,33 @@ class IntakeServiceImplTest {
     }
 
     @Test
+    fun `a throwing onStored does not skip scheduling or stale entry cleanup`() {
+        executorService.blockingMode = false
+        val stale = StoredTelemetryMetadata(
+            timestamp = clock.now(),
+            uuid = "stale-uuid",
+            processIdentifier = "old-pid",
+            envelopeType = SESSION,
+            complete = false,
+        ).apply {
+            cacheStorageService.store(this) { it.write("stale".toByteArray()) }
+        }
+        val failure = IllegalStateException("onStored failed")
+        val future = intakeService.take(
+            intake = sessionEnvelope,
+            metadata = sessionMetadata,
+            staleEntry = stale,
+            onStored = { throw failure },
+        )
+
+        assertEquals(IntakeResult.STORED, future.get())
+        assertEquals(1, payloadStorageService.storedPayloadCount())
+        assertFalse(cacheStorageService.storedFilenames().contains(stale.filename))
+        assertEquals(1, schedulingService.payloadIntakeCount)
+        assertSame(failure, errorHandler.sdkErrorMessages.single().throwable)
+    }
+
+    @Test
     fun `onStored is not invoked when the payload fails to store`() {
         payloadStorageService.failStorage = true
         var storedCount = 0
@@ -818,7 +846,7 @@ class IntakeServiceImplTest {
 
         assertEquals(0, payloadStorageService.storedPayloadCount())
         assertEquals(0, storedCount)
-        assertTrue(logger.internalErrorMessages.single().throwable is IOException)
+        assertTrue(errorHandler.sdkErrorMessages.single().throwable is IOException)
     }
 
     @Test
@@ -836,7 +864,7 @@ class IntakeServiceImplTest {
         assertEquals(0, storedCount)
         assertEquals(IntakeResult.RETRYABLE_FAILURE, future.get())
         assertEquals(0, schedulingService.payloadIntakeCount)
-        assertTrue(logger.internalErrorMessages.isEmpty())
+        assertTrue(errorHandler.sdkErrorMessages.isEmpty())
     }
 
     @Test
@@ -852,7 +880,7 @@ class IntakeServiceImplTest {
         assertEquals(0, storedCount)
         assertEquals(IntakeResult.PERMANENT_FAILURE, future.get())
         assertEquals(0, schedulingService.payloadIntakeCount)
-        assertTrue(logger.internalErrorMessages.isEmpty())
+        assertTrue(errorHandler.sdkErrorMessages.isEmpty())
     }
 
     @Test
@@ -886,7 +914,7 @@ class IntakeServiceImplTest {
             outputDir = lazy { outputDir },
             worker = PriorityWorker(BlockableExecutorService(blockingMode = false)),
             processIdProvider = { PROCESS_ID },
-            logger = logger,
+            errorHandler = errorHandler,
             clock = clock,
             storageLimit = 1,
         )
@@ -894,7 +922,7 @@ class IntakeServiceImplTest {
             schedulingService,
             fileStorageService,
             cacheStorageService,
-            logger,
+            errorHandler,
             serializer,
             PriorityWorker(executorService),
         )
@@ -918,7 +946,7 @@ class IntakeServiceImplTest {
         assertEquals(1, storedCount)
         assertEquals(listOf(sessionMetadata), fileStorageService.getPayloadsByPriority())
         assertEquals(1, schedulingService.payloadIntakeCount)
-        assertTrue(logger.internalErrorMessages.isEmpty())
+        assertTrue(errorHandler.sdkErrorMessages.isEmpty())
     }
 
     @Test
@@ -956,14 +984,14 @@ class IntakeServiceImplTest {
             outputDir = lazy { outputDir },
             worker = PriorityWorker(BlockableExecutorService(blockingMode = false)),
             processIdProvider = { PROCESS_ID },
-            logger = logger,
+            errorHandler = errorHandler,
             clock = clock,
         )
         intakeService = IntakeServiceImpl(
             schedulingService,
             fileStorageService,
             cacheStorageService,
-            logger,
+            errorHandler,
             serializer,
             PriorityWorker(executorService),
         )
@@ -981,7 +1009,7 @@ class IntakeServiceImplTest {
         assertEquals(2, storedCount)
         assertEquals(listOf(sessionMetadata), fileStorageService.getPayloadsByPriority())
         assertEquals(2, schedulingService.payloadIntakeCount)
-        assertTrue(logger.internalErrorMessages.isEmpty())
+        assertTrue(errorHandler.sdkErrorMessages.isEmpty())
     }
 
     private fun assertIntakeRejected(envelope: Envelope<*>, metadata: StoredTelemetryMetadata) {

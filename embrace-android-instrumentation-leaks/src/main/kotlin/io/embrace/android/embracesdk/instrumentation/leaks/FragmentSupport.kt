@@ -1,7 +1,9 @@
 package io.embrace.android.embracesdk.instrumentation.leaks
 
 import android.app.Activity
-import io.embrace.android.embracesdk.internal.logging.InternalLogger
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
+import io.embrace.android.embracesdk.internal.logging.guardSdkCode
 import io.embrace.android.embracesdk.internal.session.id.SessionIdsSnapshot
 
 /**
@@ -11,7 +13,7 @@ import io.embrace.android.embracesdk.internal.session.id.SessionIdsSnapshot
  * types, must never be referenced by a statically-typed field or property outside this file. Everywhere else in this module
  * only ever holds a reference of this interface's type, which is always resolvable.
  */
-internal interface FragmentSupport {
+internal interface FragmentSupport : AutoCloseable {
     fun onActivityCreated(activity: Activity)
 }
 
@@ -21,6 +23,7 @@ internal interface FragmentSupport {
  */
 internal object NoOpFragmentSupport : FragmentSupport {
     override fun onActivityCreated(activity: Activity) = Unit
+    override fun close() = Unit
 }
 
 /**
@@ -36,10 +39,10 @@ internal object NoOpFragmentSupport : FragmentSupport {
 internal fun createFragmentSupport(
     leakDetector: LeakDetector,
     activeSessionIdsProvider: () -> SessionIdsSnapshot,
-    logger: InternalLogger,
+    errorHandler: ErrorHandler,
     webViewLeakDetectionEnabled: Boolean = false,
 ): FragmentSupport {
-    return runCatching {
-        FragmentLeakDetectionLifecycleCallbacks(leakDetector, activeSessionIdsProvider, logger, webViewLeakDetectionEnabled)
-    }.getOrDefault(NoOpFragmentSupport)
+    return errorHandler.guardSdkCode(SdkErrorType.Ignored, NoOpFragmentSupport) {
+        FragmentLeakDetectionLifecycleCallbacks(leakDetector, activeSessionIdsProvider, errorHandler, webViewLeakDetectionEnabled)
+    }
 }

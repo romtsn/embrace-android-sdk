@@ -10,6 +10,7 @@ import androidx.benchmark.perfetto.ExperimentalPerfettoCaptureApi
 import androidx.benchmark.perfetto.PerfettoConfig
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.Until
+import io.embrace.android.embracesdk.benchmark.capture.CaptureProfile
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -28,7 +29,7 @@ internal class OtelInitBenchmark(otelSdkMode: OtelSdkMode) {
     @Test
     fun otelInit() {
         benchmarkRule.measureRepeated(
-            packageName = PACKAGE_NAME,
+            packageName = TARGET_PACKAGE,
             metrics = listOf(
                 TraceSectionMetric("emb-sdk-start", mode = TraceSectionMetric.Mode.Sum),
                 TraceSectionMetric("emb-otel-sdk-wrapper-init", mode = TraceSectionMetric.Mode.Sum),
@@ -36,7 +37,7 @@ internal class OtelInitBenchmark(otelSdkMode: OtelSdkMode) {
                 TraceSectionMetric("emb-otel-logger-init", mode = TraceSectionMetric.Mode.Sum),
             ),
             iterations = ITERATIONS,
-            experimentalConfig = ExperimentalConfig(perfettoConfig = PerfettoConfig.Text(traceConfig())),
+            experimentalConfig = ExperimentalConfig(perfettoConfig = PerfettoConfig.Text(CaptureProfile.APP_ONLY.traceConfig)),
             startupMode = StartupMode.COLD,
             setupBlock = {
                 device.executeShellCommand("pm clear $packageName")
@@ -53,17 +54,12 @@ internal class OtelInitBenchmark(otelSdkMode: OtelSdkMode) {
         }
     }
 
-    private fun traceConfig(): String =
-        checkNotNull(javaClass.getResourceAsStream("/perfetto-config.pbtx"))
-            .use { it.reader().readText() }
-
     companion object {
 
         @JvmStatic
         @Parameterized.Parameters(name = "{0}")
         fun modes(): List<OtelSdkMode> = OtelSdkMode.entries
 
-        private const val PACKAGE_NAME = "io.embrace.android.embracesdk.macrobenchmark.app"
         private const val ITERATIONS = 10
         private const val STATUS_TIMEOUT_MS = 10_000L
     }

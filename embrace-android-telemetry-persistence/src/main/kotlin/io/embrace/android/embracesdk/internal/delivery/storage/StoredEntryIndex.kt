@@ -1,8 +1,9 @@
 package io.embrace.android.embracesdk.internal.delivery.storage
 
 import io.embrace.android.embracesdk.internal.clock.Clock
-import io.embrace.android.embracesdk.internal.logging.InternalErrorType
-import io.embrace.android.embracesdk.internal.logging.InternalLogger
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
+import io.embrace.android.embracesdk.internal.logging.guardSdkCode
 import io.embrace.android.embracesdk.internal.utils.SystemTrace
 import io.embrace.android.embracesdk.internal.utils.threadSafeToList
 import java.io.File
@@ -21,8 +22,8 @@ class StoredEntryIndex<T>(
     outputDir: Lazy<File>,
     private val layout: StoredEntryLayout<T>,
     private val clock: Clock,
-    private val logger: InternalLogger,
-    private val errorType: InternalErrorType,
+    private val errorHandler: ErrorHandler,
+    private val errorType: SdkErrorType,
     private val storageLimit: Int,
     private val maxAgeMs: Long,
 ) {
@@ -32,14 +33,14 @@ class StoredEntryIndex<T>(
     }
 
     private val entries: CopyOnWriteArraySet<T> by lazy {
-        val result = runCatching { rootDir.listFiles() }.getOrNull()
+        val result = errorHandler.guardSdkCode(SdkErrorType.Ignored, null) { rootDir.listFiles() }
         val files = result?.toList() ?: emptyList()
         val parsed = files.mapNotNull { file ->
             val entry = layout.fromName(file.name)
             if (entry == null) {
                 // discard anything that can't be parsed (e.g. leftover .tmp files from killed
                 // processes, or data written by an SDK using a different layout)
-                runCatching { layout.delete(file) }
+                errorHandler.guardSdkCode(errorType) { layout.delete(file) }
             }
             entry
         }
@@ -67,15 +68,13 @@ class StoredEntryIndex<T>(
      * Removes the entry's data from disk, and the entry from the index.
      */
     fun delete(entry: T) {
-        try {
-            layout.delete(fileFor(entry))
-        } catch (exc: Throwable) {
-            if (exc !is FileNotFoundException) {
-                logger.trackInternalError(errorType, exc)
+        errorHandler.guardSdkCode(errorType) {
+            try {
+                layout.delete(fileFor(entry))
+            } catch (_: FileNotFoundException) {
             }
-        } finally {
-            entries.remove(entry)
         }
+        entries.remove(entry)
     }
 
     /**

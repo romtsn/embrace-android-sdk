@@ -4,11 +4,13 @@ import android.annotation.SuppressLint
 import android.view.View
 import android.view.ViewGroup
 import androidx.compose.ui.platform.ComposeView
-import io.embrace.android.embracesdk.internal.logging.InternalLogger
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
+import io.embrace.android.embracesdk.internal.logging.guardSdkCode
 import java.util.ArrayDeque
 
 internal class ComposeClickedTargetIterator(
-    private val logger: InternalLogger,
+    private val errorHandler: ErrorHandler,
     dataSource: ComposeTapDataSource,
 ) : EmbraceClickedTargetIterator {
 
@@ -20,9 +22,9 @@ internal class ComposeClickedTargetIterator(
         x: Float,
         y: Float,
     ) {
-        try {
+        errorHandler.guardSdkCode(SdkErrorType.UiCallbackFail) {
             if (!containsWindowPoint(decorView, x, y)) {
-                return
+                return@guardSdkCode
             }
 
             val queue = ArrayDeque<View>()
@@ -43,8 +45,6 @@ internal class ComposeClickedTargetIterator(
                     nodeLocator.findClickedElement(view, x, y)
                 }
             }
-        } catch (e: Throwable) {
-            logger.logError("Failed to find target", e)
         }
     }
 

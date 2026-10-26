@@ -4,7 +4,8 @@ import android.content.Context
 import android.view.View
 import android.webkit.WebView
 import android.widget.FrameLayout
-import io.embrace.android.embracesdk.fakes.FakeInternalLogger
+import io.embrace.android.embracesdk.fakes.FakeErrorHandler
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -16,7 +17,7 @@ import org.robolectric.RuntimeEnvironment
 internal class WebViewLeakScannerTest {
 
     private val context: Context get() = RuntimeEnvironment.getApplication()
-    private val logger = FakeInternalLogger()
+    private val errorHandler = FakeErrorHandler()
 
     @Test
     fun `finds a webview nested inside a view group`() {
@@ -24,7 +25,7 @@ internal class WebViewLeakScannerTest {
         val root = FrameLayout(context).apply { addView(FrameLayout(context).apply { addView(webView) }) }
         val found = mutableListOf<WebView>()
 
-        WebViewLeakScanner.scan(root, logger) { found.add(it) }
+        WebViewLeakScanner.scan(root, errorHandler) { found.add(it) }
 
         assertEquals(listOf(webView), found)
     }
@@ -34,7 +35,7 @@ internal class WebViewLeakScannerTest {
         val root = FrameLayout(context).apply { addView(View(context)) }
         val found = mutableListOf<WebView>()
 
-        WebViewLeakScanner.scan(root, logger) { found.add(it) }
+        WebViewLeakScanner.scan(root, errorHandler) { found.add(it) }
 
         assertTrue(found.isEmpty())
     }
@@ -43,7 +44,7 @@ internal class WebViewLeakScannerTest {
     fun `is a no-op for a null root`() {
         val found = mutableListOf<WebView>()
 
-        WebViewLeakScanner.scan(null, logger) { found.add(it) }
+        WebViewLeakScanner.scan(null, errorHandler) { found.add(it) }
 
         assertTrue(found.isEmpty())
     }
@@ -56,20 +57,21 @@ internal class WebViewLeakScannerTest {
         repeat(40) { innermost = FrameLayout(context).apply { addView(innermost) } }
         val found = mutableListOf<WebView>()
 
-        WebViewLeakScanner.scan(innermost, logger) { found.add(it) }
+        WebViewLeakScanner.scan(innermost, errorHandler) { found.add(it) }
 
         assertTrue("a webview nested deeper than the depth cap should not be found", found.isEmpty())
     }
 
     @Test
-    fun `an exception during traversal is caught and logged, not thrown`() {
+    fun `an exception during traversal is caught and reported, not thrown`() {
+        errorHandler.throwOnSdkError = false
         val root = ThrowingViewGroup(context)
         val found = mutableListOf<WebView>()
 
-        WebViewLeakScanner.scan(root, logger) { found.add(it) }
+        WebViewLeakScanner.scan(root, errorHandler) { found.add(it) }
 
         assertTrue(found.isEmpty())
-        assertEquals(1, logger.errorMessages.size)
+        assertEquals(SdkErrorType.UiCallbackFail.toString(), errorHandler.sdkErrorMessages.single().msg)
     }
 }
 

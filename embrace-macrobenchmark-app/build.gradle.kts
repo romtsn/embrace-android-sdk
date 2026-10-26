@@ -92,6 +92,14 @@ android {
     }
 }
 
+val baselineProfile = providers.gradleProperty("embrace.baselineProfile").isPresent
+
+androidComponents {
+    beforeVariants(selector().all()) {
+        it.enable = it.buildType == "benchmark" || (baselineProfile && it.buildType == "baselineProfile")
+    }
+}
+
 kotlin {
     compilerOptions {
         jvmTarget.set(JvmTarget.JVM_11)
@@ -100,6 +108,8 @@ kotlin {
 
 dependencies {
     implementation(project(":embrace-android-sdk"))
+    implementation(project(":embrace-android-config"))
+    implementation(project(":embrace-android-telemetry-persistence"))
     implementation(project(":embrace-benchmark-common"))
     implementation(project(":embrace-android-otel-java"))
     implementation(libs.opentelemetry.kotlin.api)
@@ -109,4 +119,12 @@ dependencies {
     // macrobenchmark needs 1.4.0+ to install a baseline profile on API 34+, overriding the
     // older version the SDK pins for its own build
     implementation(libs.profileinstaller.benchmark)
+
+    testImplementation(libs.junit)
+}
+
+// Linting this app's variant runs lintAnalyzeRelease on every library, even with checkDependencies
+// off, so keep lint out of `check` to keep local builds fast. CI runs it via the root `ciBuild` task.
+tasks.named("check") {
+    setDependsOn(dependsOn.filterNot { it is TaskProvider<*> && it.name == "lint" })
 }

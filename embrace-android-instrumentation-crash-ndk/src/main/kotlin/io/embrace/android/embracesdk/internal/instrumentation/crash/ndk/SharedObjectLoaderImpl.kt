@@ -1,12 +1,12 @@
 package io.embrace.android.embracesdk.internal.instrumentation.crash.ndk
 
-import io.embrace.android.embracesdk.internal.logging.InternalErrorType
-import io.embrace.android.embracesdk.internal.logging.InternalLogger
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
 import io.embrace.android.embracesdk.internal.utils.EmbTrace
 import java.util.concurrent.atomic.AtomicBoolean
 
 internal class SharedObjectLoaderImpl(
-    private val logger: InternalLogger,
+    private val errorHandler: ErrorHandler,
 ) : SharedObjectLoader {
     override val loaded = AtomicBoolean(false)
     private val loggedFailure = AtomicBoolean(false)
@@ -27,8 +27,8 @@ internal class SharedObjectLoaderImpl(
                     loaded.set(true)
                 } catch (exc: UnsatisfiedLinkError) {
                     if (!loggedFailure.getAndSet(true)) {
-                        logger.trackInternalError(
-                            type = InternalErrorType.NativeReadFail,
+                        errorHandler.trackSdkError(
+                            type = SdkErrorType.NativeReadFail,
                             throwable = exc,
                         )
                     }

@@ -3,13 +3,13 @@ package io.embrace.android.embracesdk.internal.instrumentation.startup.ui
 import android.app.Activity
 import android.os.Build.VERSION_CODES
 import io.embrace.android.embracesdk.internal.handler.AndroidMainThreadHandler
-import io.embrace.android.embracesdk.internal.logging.InternalLogger
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
 import io.embrace.android.embracesdk.internal.utils.VersionChecker
 
 /**
- * Interface that allows callbacks to be registered and invoked when UI draw events happen
+ * Interface that allows callbacks to be registered and invoked when UI draw events happen.
  */
-interface DrawEventEmitter {
+interface DrawEventEmitter : AutoCloseable {
     /**
      * Register the given callback to the UI inside of the given activity instance to be invoked when the first frame
      * has drawn.
@@ -28,11 +28,11 @@ interface DrawEventEmitter {
 
 internal fun createDrawEventEmitter(
     versionChecker: VersionChecker,
-    logger: InternalLogger,
+    errorHandler: ErrorHandler,
 ): DrawEventEmitter? = if (supportFrameCommitCallback(versionChecker)) {
-    FirstDrawDetector(logger)
+    FirstDrawDetector(errorHandler)
 } else if (hasRenderEvent(versionChecker)) {
-    HandlerMessageDrawDetector(AndroidMainThreadHandler())
+    HandlerMessageDrawDetector(AndroidMainThreadHandler(errorHandler), errorHandler)
 } else {
     null
 }

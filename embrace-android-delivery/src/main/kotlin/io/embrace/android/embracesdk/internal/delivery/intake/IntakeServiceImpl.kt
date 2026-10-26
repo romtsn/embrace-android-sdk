@@ -11,8 +11,9 @@ import io.embrace.android.embracesdk.internal.delivery.storage.PayloadStorageSer
 import io.embrace.android.embracesdk.internal.delivery.storage.StorageOutcome
 import io.embrace.android.embracesdk.internal.delivery.storage.storeAttachment
 import io.embrace.android.embracesdk.internal.delivery.traceSection
-import io.embrace.android.embracesdk.internal.logging.InternalErrorType
-import io.embrace.android.embracesdk.internal.logging.InternalLogger
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
+import io.embrace.android.embracesdk.internal.logging.guardSdkCode
 import io.embrace.android.embracesdk.internal.payload.Envelope
 import io.embrace.android.embracesdk.internal.serialization.PlatformSerializer
 import io.embrace.android.embracesdk.internal.utils.CountingOutputStream
@@ -29,7 +30,7 @@ class IntakeServiceImpl(
     private val schedulingService: SchedulingService,
     private val payloadStorageService: PayloadStorageService,
     private val cacheStorageService: PayloadStorageService,
-    private val logger: InternalLogger,
+    private val errorHandler: ErrorHandler,
     private val serializer: PlatformSerializer,
     private val worker: PriorityWorker<StoredTelemetryMetadata>,
     private val deliveryTracer: DeliveryTracer? = null,
@@ -138,7 +139,7 @@ class IntakeServiceImpl(
         onStored: (() -> Unit)?,
     ): IntakeResult {
         var result = IntakeResult.NOT_ATTEMPTED
-        try {
+        errorHandler.guardSdkCode(SdkErrorType.IntakeFail) {
             val service = when {
                 metadata.complete -> payloadStorageService
                 else -> cacheStorageService
@@ -161,20 +162,19 @@ class IntakeServiceImpl(
 
             // Return non-successful outcomes early.
             // A payload storage rejected may succeed in a later attempt, but one that failed won't.
-            when (outcome) {
-                StorageOutcome.REJECTED -> {
-                    return IntakeResult.RETRYABLE_FAILURE
-                }
-                StorageOutcome.FAILED -> {
-                    return IntakeResult.PERMANENT_FAILURE
-                }
-                StorageOutcome.STORED -> {
-                    result = IntakeResult.STORED
-                }
+            result = when (outcome) {
+                StorageOutcome.REJECTED -> IntakeResult.RETRYABLE_FAILURE
+                StorageOutcome.FAILED -> IntakeResult.PERMANENT_FAILURE
+                StorageOutcome.STORED -> IntakeResult.STORED
+            }
+            if (result != IntakeResult.STORED) {
+                return@guardSdkCode
             }
 
             // the payload is now on disk, so any other copy the caller holds is safe to discard
-            onStored?.invoke()
+            errorHandler.guardSdkCode(SdkErrorType.IntakeFail) {
+                onStored?.invoke()
+            }
 
             /**
              * Determine which cache entry to clean up:
@@ -198,8 +198,8 @@ class IntakeServiceImpl(
                     schedulingService.onPayloadIntake()
                 }
             } else if (!cacheableEnvelopeTypes.contains(metadata.envelopeType)) {
-                logger.trackInternalError(
-                    InternalErrorType.IntakeUnexpectedType,
+                errorHandler.trackSdkError(
+                    SdkErrorType.IntakeUnexpectedType,
                     IllegalStateException("Unexpected envelope type cache attempt: ${metadata.envelopeType}"),
                 )
             }
@@ -207,8 +207,6 @@ class IntakeServiceImpl(
             entryToCleanup?.let {
                 cacheStorageService.delete(it)
             }
-        } catch (exc: Throwable) {
-            logger.trackInternalError(InternalErrorType.IntakeFail, exc)
         }
         return result
     }

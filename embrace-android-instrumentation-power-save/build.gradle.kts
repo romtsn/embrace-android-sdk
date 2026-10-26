@@ -12,6 +12,4 @@ dependencies {
     implementation(project(":embrace-android-instrumentation-api"))
 
     testImplementation(project(":embrace-android-instrumentation-api-fakes"))
-    testImplementation(libs.robolectric)
-    testImplementation(libs.mockk)
 }

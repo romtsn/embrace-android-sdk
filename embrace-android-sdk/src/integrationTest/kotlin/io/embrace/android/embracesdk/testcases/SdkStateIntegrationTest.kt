@@ -11,7 +11,7 @@ import io.embrace.android.embracesdk.Severity
 import io.embrace.android.embracesdk.UserSessionListener
 import io.embrace.android.embracesdk.assertions.findSpanByName
 import io.embrace.android.embracesdk.assertions.returnIfConditionMet
-import io.embrace.android.embracesdk.fakes.FakeInternalLogger
+import io.embrace.android.embracesdk.fakes.FakeErrorHandler
 import io.embrace.android.embracesdk.fakes.FakeLogRecordExporter
 import io.embrace.android.embracesdk.fakes.FakeLogRecordProcessor
 import io.embrace.android.embracesdk.fakes.FakeSpanExporter
@@ -24,10 +24,11 @@ import io.embrace.android.embracesdk.internal.config.remote.RemoteConfig
 import io.embrace.android.embracesdk.internal.delivery.storage.StorageLocation
 import io.embrace.android.embracesdk.internal.delivery.storage.asFile
 import io.embrace.android.embracesdk.internal.instance.SdkState
-import io.embrace.android.embracesdk.internal.logging.InternalErrorType
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
 import io.embrace.android.embracesdk.internal.otel.sdk.findAttributeValue
 import io.embrace.android.embracesdk.internal.otel.spans.NoopEmbraceSdkSpan
 import io.embrace.android.embracesdk.internal.toStringMap
+import io.embrace.android.embracesdk.internal.utils.event.EventKey
 import io.embrace.android.embracesdk.network.EmbraceNetworkRequest
 import io.embrace.android.embracesdk.network.http.HttpMethod
 import io.embrace.android.embracesdk.network.http.HttpRequestInfoModifier
@@ -82,8 +83,8 @@ internal class SdkStateIntegrationTest(
         private val sdkDisabledConfig = RemoteConfig(threshold = 0)
         private fun File.sentinelFile(): File = File(File(this, TEST_SUBDIR_NAME), TEST_FILE_NAME)
 
-        private fun assertNoInternalErrors(logger: FakeInternalLogger) {
-            assertEquals(emptyList<String>(), logger.internalErrorMessages.map { it.msg })
+        private fun assertNoSdkErrors(errorHandler: FakeErrorHandler) {
+            assertEquals(emptyList<String>(), errorHandler.sdkErrorMessages.map { it.msg })
         }
     }
 
@@ -98,7 +99,7 @@ internal class SdkStateIntegrationTest(
     fun setUp() {
         embraceDirs = StorageLocation.entries.associateWith {
             it.asFile(
-                logger = FakeInternalLogger(),
+                errorHandler = FakeErrorHandler(),
                 rootDirSupplier = { context.filesDir },
                 fallbackDirSupplier = { context.cacheDir },
             ).value
@@ -107,13 +108,13 @@ internal class SdkStateIntegrationTest(
 
     @Test
     fun `NOT_STARTED - API calls are safe, buffered calls are replayed`() {
-        lateinit var logger: FakeInternalLogger
+        lateinit var errorHandler: FakeErrorHandler
         lateinit var calls: ApiCalls
         testRule.runTest(
             startSdk = false,
             setupAction = {
-                logger = getEmbLogger().apply {
-                    throwOnInternalError = false
+                errorHandler = getFakeErrorHandler().apply {
+                    throwOnSdkError = false
                 }
             },
             testCaseAction = {
@@ -130,7 +131,7 @@ internal class SdkStateIntegrationTest(
                 }
             },
             assertAction = {
-                calls.assertDropped(logger)
+                calls.assertDropped(errorHandler)
 
                 val span = getSingleSessionEnvelope().findSpanByName(COMPLETED_SPAN)
                 assertEquals(calls.startMs.millisToNanos(), span.startTimeNanos)
@@ -138,7 +139,7 @@ internal class SdkStateIntegrationTest(
                 assertEquals("value", span.attributes?.findAttributeValue("key"))
                 assertEquals(
                     calls.experimentRecords,
-                    testRule.moduleGraph.essentialServiceModule.experimentTrackingService.getRecords(),
+                    testRule.services.experimentTrackingService.getRecords(),
                 )
                 assertEquals(listOf(LOG_2), getSingleLogEnvelope().data.logs?.map { it.body })
             },
@@ -191,28 +192,28 @@ internal class SdkStateIntegrationTest(
     }
 
     @Test
-    fun `NOT_STARTED to FAILED - start is rejected when remote config disables the SDK`() {
-        lateinit var logger: FakeInternalLogger
+    fun `NOT_STARTED to DISABLED - start is rejected when remote config disables the SDK`() {
+        lateinit var errorHandler: FakeErrorHandler
         testRule.runTest(
             persistedRemoteConfig = sdkDisabledConfig,
             expectSdkToStart = false,
             setupAction = {
-                logger = getEmbLogger().apply {
-                    throwOnInternalError = false
+                errorHandler = getFakeErrorHandler().apply {
+                    throwOnSdkError = false
                 }
             },
             testCaseAction = {
-                assertEquals(SdkState.FAILED, sdkState)
+                assertEquals(SdkState.DISABLED, sdkState)
                 assertFalse(embrace.isStarted)
                 recordSession {
                     embrace.logInfo(LOG_1)
                 }
             },
             assertAction = {
-                assertNoInternalErrors(logger)
+                assertNoSdkErrors(errorHandler)
                 assertEquals(
-                    listOf("Embrace SDK failed to start, cannot log_message. Subsequent dropped calls will not be logged."),
-                    logger.infoMessages.map { it.msg }.filter { it.startsWith("Embrace SDK failed to start") },
+                    listOf("Embrace SDK is disabled, cannot log_message. Subsequent dropped calls will not be logged."),
+                    errorHandler.infoMessages.map { it.msg }.filter { it.startsWith("Embrace SDK") },
                 )
                 assertEquals(0, getLogEnvelopes(0).size)
                 assertEquals(0, getSessionEnvelopes(0).size)
@@ -222,15 +223,16 @@ internal class SdkStateIntegrationTest(
 
     @Test
     fun `NOT_STARTED to FAILED - start is rejected when module graph construction throws`() {
-        lateinit var logger: FakeInternalLogger
+        lateinit var errorHandler: FakeErrorHandler
         val failure = IllegalStateException("module graph failure")
         testRule.runTest(
             expectSdkToStart = false,
+            expectedSdkState = SdkState.FAILED,
             setupAction = {
-                logger = getEmbLogger().apply {
-                    throwOnInternalError = false
+                errorHandler = getFakeErrorHandler().apply {
+                    throwOnSdkError = false
                 }
-                moduleGraphFailure = failure
+                constructionFailure = failure
             },
             testCaseAction = {
                 assertEquals(SdkState.FAILED, sdkState)
@@ -246,13 +248,13 @@ internal class SdkStateIntegrationTest(
             },
             assertAction = {
                 assertEquals(
-                    listOf(InternalErrorType.PublicApiFail.toString()),
-                    logger.internalErrorMessages.map { it.msg },
+                    listOf(SdkErrorType.PublicApiFail.toString()),
+                    errorHandler.sdkErrorMessages.map { it.msg },
                 )
-                assertSame(failure, logger.internalErrorMessages.single().throwable)
+                assertSame(failure, errorHandler.sdkErrorMessages.single().throwable)
                 assertEquals(
                     listOf("Embrace SDK failed to start, cannot log_message. Subsequent dropped calls will not be logged."),
-                    logger.infoMessages.map { it.msg }.filter { it.startsWith("Embrace SDK failed to start") },
+                    errorHandler.infoMessages.map { it.msg }.filter { it.startsWith("Embrace SDK failed to start") },
                 )
                 assertEquals(0, getLogEnvelopes(0).size)
                 assertEquals(0, getSessionEnvelopes(0).size)
@@ -280,11 +282,11 @@ internal class SdkStateIntegrationTest(
 
     @Test
     fun `STARTED to DISABLED - data export stops`() {
-        lateinit var logger: FakeInternalLogger
+        lateinit var errorHandler: FakeErrorHandler
         testRule.runTest(
             setupAction = {
-                logger = getEmbLogger().apply {
-                    throwOnInternalError = false
+                errorHandler = getFakeErrorHandler().apply {
+                    throwOnSdkError = false
                 }
                 // create dummy values in embrace directories to see if they are deleted
                 embraceDirs.values.forEach {
@@ -314,7 +316,7 @@ internal class SdkStateIntegrationTest(
             },
             assertAction = {
                 awaitStorageDeleted()
-                assertNoInternalErrors(logger)
+                assertNoSdkErrors(errorHandler)
                 assertEquals(0, getLogEnvelopes(0).size)
                 assertEquals(0, getSessionEnvelopes(0).size)
             },
@@ -333,13 +335,62 @@ internal class SdkStateIntegrationTest(
     }
 
     @Test
+    fun `STARTED to DISABLED - customer processors stop receiving telemetry and are shut down`() {
+        val spanProcessor = FakeSpanProcessor()
+        val logRecordProcessor = FakeLogRecordProcessor()
+        testRule.runTest(
+            preSdkStartAction = {
+                embrace.addSpanProcessor(spanProcessor)
+                embrace.addLogRecordProcessor(logRecordProcessor)
+            },
+            testCaseAction = {
+                recordSession {
+                    val heldSpan = embrace.startSpan(SPAN_2)
+                    embrace.startSpan(SPAN_1).stop()
+                    embrace.logInfo(LOG_1)
+                    embrace.disable()
+                    heldSpan.stop()
+                }
+            },
+            assertAction = {
+                returnIfConditionMet(
+                    desiredValueSupplier = { true },
+                    dataProvider = { spanProcessor.shutdownCount == 1 && logRecordProcessor.shutdownCount == 1 },
+                    condition = { it },
+                )
+                assertEquals(listOf(SPAN_1), spanProcessor.endedSpanNames.filter { it.startsWith(TEST_PREFIX) })
+                assertEquals(listOf(LOG_1), logRecordProcessor.processedLogBodies.filter { it.startsWith(TEST_PREFIX) })
+            },
+        )
+    }
+
+    @Test
+    fun `STARTED to DISABLED - event bus is stopped`() {
+        testRule.runTest(
+            testCaseAction = {
+                val key = EventKey<Unit>()
+                var delivered = 0
+                var producerClosed = false
+                eventBus.ensureEventProducer(key) { AutoCloseable { producerClosed = true } }
+                eventBus.addHandler(key) { delivered++ }
+
+                embrace.disable()
+                eventBus.emit(key, Unit)
+
+                assertEquals(0, delivered)
+                assertTrue(producerClosed)
+            },
+        )
+    }
+
+    @Test
     fun `DISABLED - API calls are safe, buffered calls are dropped`() {
-        lateinit var logger: FakeInternalLogger
+        lateinit var errorHandler: FakeErrorHandler
         lateinit var calls: ApiCalls
         testRule.runTest(
             setupAction = {
-                logger = getEmbLogger().apply {
-                    throwOnInternalError = false
+                errorHandler = getFakeErrorHandler().apply {
+                    throwOnSdkError = false
                 }
             },
             testCaseAction = {
@@ -353,7 +404,7 @@ internal class SdkStateIntegrationTest(
                 recordSession()
             },
             assertAction = {
-                calls.assertDropped(logger, disabled = true)
+                calls.assertDropped(errorHandler, disabled = true)
                 calls.assertOTelConfigNotApplied()
                 awaitStorageDeleted()
                 assertEquals(0, getLogEnvelopes(0).size)
@@ -379,12 +430,12 @@ internal class SdkStateIntegrationTest(
 
     @Test
     fun `DISABLED - start is ignored`() {
-        lateinit var logger: FakeInternalLogger
+        lateinit var errorHandler: FakeErrorHandler
         lateinit var calls: ApiCalls
         testRule.runTest(
             setupAction = {
-                logger = getEmbLogger().apply {
-                    throwOnInternalError = false
+                errorHandler = getFakeErrorHandler().apply {
+                    throwOnSdkError = false
                 }
             },
             testCaseAction = {
@@ -403,7 +454,7 @@ internal class SdkStateIntegrationTest(
                 recordSession()
             },
             assertAction = {
-                calls.assertDropped(logger, disabled = true)
+                calls.assertDropped(errorHandler, disabled = true)
 
                 // calls made while disabled are not replayed
                 calls.assertOTelConfigNotApplied()
@@ -419,43 +470,46 @@ internal class SdkStateIntegrationTest(
             startSdk = false,
             testCaseAction = {
                 assertInternalApiIsNoop()
-                EmbraceInternalApi.internalInterface.addEnvelopeResource("before", "start")
+                val internalInterface = EmbraceInternalApi.internalInterface
+                internalInterface.addEnvelopeResource("before", "start")
 
                 embrace.start(context)
                 assertInternalApiIsLive()
                 EmbraceInternalApi.internalInterface.addEnvelopeResource("after", "start")
+                internalInterface.addEnvelopeResource("held", "start")
                 recordSession()
             },
             assertAction = {
                 val extras = checkNotNull(getSingleSessionEnvelope().resource?.extras)
                 assertEquals("start", extras["after"])
+                assertEquals("start", extras["held"])
                 assertFalse(extras.containsKey("before"))
             },
         )
     }
 
     @Test
-    fun `NOT_STARTED to FAILED - internal API stays noop when start is rejected`() {
+    fun `NOT_STARTED to DISABLED - internal API stays noop when start is rejected`() {
         testRule.runTest(
             persistedRemoteConfig = sdkDisabledConfig,
             expectSdkToStart = false,
             testCaseAction = {
                 assertInternalApiIsNoop()
                 embrace.start(context)
-                assertEquals(SdkState.FAILED, sdkState)
+                assertEquals(SdkState.DISABLED, sdkState)
                 assertInternalApiIsNoop()
             },
         )
     }
 
     @Test
-    fun `FAILED - start is not retried`() {
+    fun `DISABLED by config - start is not retried`() {
         testRule.runTest(
             persistedRemoteConfig = sdkDisabledConfig,
             expectSdkToStart = false,
             testCaseAction = {
                 embrace.start(context)
-                assertEquals(SdkState.FAILED, sdkState)
+                assertEquals(SdkState.DISABLED, sdkState)
                 assertFalse(embrace.isStarted)
             },
             assertAction = {
@@ -465,7 +519,7 @@ internal class SdkStateIntegrationTest(
     }
 
     @Test
-    fun `FAILED to DISABLED - start is ignored`() {
+    fun `DISABLED by config - disable and start are ignored`() {
         testRule.runTest(
             persistedRemoteConfig = sdkDisabledConfig,
             expectSdkToStart = false,
@@ -502,23 +556,19 @@ internal class SdkStateIntegrationTest(
     }
 
     private fun assertInternalApiIsNoop() {
-        assertSame(NoopInternalInterfaceApi.internalInterface, EmbraceInternalApi.internalInterface)
-        assertSame(
-            NoopInternalInterfaceApi.reactNativeInternalInterface,
-            EmbraceInternalApi.reactNativeInternalInterface,
-        )
-        assertSame(NoopInternalInterfaceApi.unityInternalInterface, EmbraceInternalApi.unityInternalInterface)
-        assertSame(NoopInternalInterfaceApi.flutterInternalInterface, EmbraceInternalApi.flutterInternalInterface)
+        val api = EmbraceInternalApi.internalInterfaceApi
+        assertSame(NoopInternalInterfaceApi.internalInterface, api.internalInterface)
+        assertSame(NoopInternalInterfaceApi.reactNativeInternalInterface, api.reactNativeInternalInterface)
+        assertSame(NoopInternalInterfaceApi.unityInternalInterface, api.unityInternalInterface)
+        assertSame(NoopInternalInterfaceApi.flutterInternalInterface, api.flutterInternalInterface)
     }
 
     private fun assertInternalApiIsLive() {
-        assertNotSame(NoopInternalInterfaceApi.internalInterface, EmbraceInternalApi.internalInterface)
-        assertNotSame(
-            NoopInternalInterfaceApi.reactNativeInternalInterface,
-            EmbraceInternalApi.reactNativeInternalInterface,
-        )
-        assertNotSame(NoopInternalInterfaceApi.unityInternalInterface, EmbraceInternalApi.unityInternalInterface)
-        assertNotSame(NoopInternalInterfaceApi.flutterInternalInterface, EmbraceInternalApi.flutterInternalInterface)
+        val api = EmbraceInternalApi.internalInterfaceApi
+        assertNotSame(NoopInternalInterfaceApi.internalInterface, api.internalInterface)
+        assertNotSame(NoopInternalInterfaceApi.reactNativeInternalInterface, api.reactNativeInternalInterface)
+        assertNotSame(NoopInternalInterfaceApi.unityInternalInterface, api.unityInternalInterface)
+        assertNotSame(NoopInternalInterfaceApi.flutterInternalInterface, api.flutterInternalInterface)
     }
 
     private fun awaitStorageDeleted() {
@@ -659,9 +709,7 @@ internal class SdkStateIntegrationTest(
             assertNull(embrace.getSpan("0000000000000000"))
             assertEquals(disabled, embrace.generateW3cTraceparent() == null)
             assertNotNull(embrace.getOpenTelemetryKotlin())
-            if (!disabled) {
-                assertEquals(0, embrace.getSdkCurrentTimeMs())
-            }
+            assertEquals(startMs, embrace.getSdkCurrentTimeMs())
             assertFalse(embrace.isStarted)
             assertEquals("", embrace.deviceId)
             assertNull(embrace.currentUserSessionId)
@@ -672,18 +720,17 @@ internal class SdkStateIntegrationTest(
         /**
          * Asserts that the first dropped call was reported, and that subsequent dropped calls were not.
          */
-        fun assertDropped(logger: FakeInternalLogger, disabled: Boolean = false) {
-            assertNoInternalErrors(logger)
-            assertEquals(emptyList<String>(), logger.sdkNotInitializedMessages.map { it.msg })
+        fun assertDropped(errorHandler: FakeErrorHandler, disabled: Boolean = false) {
+            assertNoSdkErrors(errorHandler)
             if (disabled) {
                 assertEquals(
                     listOf("Embrace SDK is disabled, cannot add_span_exporter. Subsequent dropped calls will not be logged."),
-                    logger.infoMessages.map { it.msg }.filter { it.startsWith("Embrace SDK is disabled") },
+                    errorHandler.infoMessages.map { it.msg }.filter { it.startsWith("Embrace SDK is disabled") },
                 )
             } else {
                 assertEquals(
                     listOf("Embrace SDK is not initialized yet, cannot log_message."),
-                    logger.warningMessages.map { it.msg },
+                    errorHandler.warningMessages.map { it.msg },
                 )
             }
         }

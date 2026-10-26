@@ -5,8 +5,8 @@ import io.embrace.android.embracesdk.internal.delivery.StoredTelemetryMetadata
 import io.embrace.android.embracesdk.internal.delivery.storage.FileStorageService
 import io.embrace.android.embracesdk.internal.delivery.storage.FileStorageServiceImpl
 import io.embrace.android.embracesdk.internal.instrumentation.crash.ndk.jni.JniDelegate
-import io.embrace.android.embracesdk.internal.logging.InternalErrorType
-import io.embrace.android.embracesdk.internal.logging.InternalLogger
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
 import io.embrace.android.embracesdk.internal.payload.NativeCrashData
 import io.embrace.android.embracesdk.internal.serialization.PlatformSerializer
 import io.embrace.android.embracesdk.internal.worker.PriorityWorker
@@ -22,12 +22,12 @@ internal class NativeCrashProcessorImpl(
     worker: PriorityWorker<StoredTelemetryMetadata>,
 ) : NativeCrashProcessor {
 
-    private val logger: InternalLogger = args.logger
+    private val errorHandler: ErrorHandler = args.errorHandler
     private val serializer: PlatformSerializer = args.serializer
     private val fileStorageService: FileStorageService = FileStorageServiceImpl(
         outputDir,
         worker,
-        logger,
+        errorHandler,
         args.clock,
     )
 
@@ -74,15 +74,15 @@ internal class NativeCrashProcessorImpl(
                         .copy(symbols = symbolMap)
                     nativeCrashes[nativeCrash.nativeCrashId] = LoadedCrash(nativeCrash, metadata)
                 } else {
-                    logger.trackInternalError(
-                        type = InternalErrorType.NativeCrashLoadFail,
+                    errorHandler.trackSdkError(
+                        type = SdkErrorType.NativeCrashLoadFail,
                         throwable = FileNotFoundException("Failed to load crash report at ${crashFile.path}"),
                     )
                 }
             } catch (t: Throwable) {
                 crashFile.delete()
-                logger.trackInternalError(
-                    type = InternalErrorType.NativeCrashLoadFail,
+                errorHandler.trackSdkError(
+                    type = SdkErrorType.NativeCrashLoadFail,
                     throwable = RuntimeException(
                         "Failed to read native crash file {crashFilePath=" + crashFile.absolutePath + "}.",
                         t,

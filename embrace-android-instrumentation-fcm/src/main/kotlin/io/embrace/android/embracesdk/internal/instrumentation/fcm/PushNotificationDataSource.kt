@@ -6,7 +6,8 @@ import io.embrace.android.embracesdk.internal.arch.datasource.DataSourceImpl
 import io.embrace.android.embracesdk.internal.arch.limits.UpToLimitStrategy
 import io.embrace.android.embracesdk.internal.arch.schema.SchemaType
 import io.embrace.android.embracesdk.internal.instrumentation.fcm.PushNotificationBreadcrumb.NotificationType.Builder.notificationTypeFor
-import io.embrace.android.embracesdk.internal.logging.InternalErrorType
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
+import io.embrace.android.embracesdk.internal.logging.guardSdkCode
 
 /**
  * Captures custom breadcrumbs.
@@ -19,10 +20,16 @@ class PushNotificationDataSource(
     instrumentationName = "push_notification_data_source",
 ) {
 
+    override fun onDataCaptureDisabled() {
+        if (fcmDataSource === this) {
+            fcmDataSource = null
+        }
+    }
+
     fun logPushNotification(
         message: RemoteMessage,
     ) {
-        try {
+        errorHandler.guardSdkCode(SdkErrorType.DataSourceDataCaptureFail) {
             val notification: RemoteMessage.Notification? = message.notification
             val type = notificationTypeFor(message.data.isNotEmpty(), notification != null)
 
@@ -34,8 +41,6 @@ class PushNotificationDataSource(
                 type = type,
                 notificationPriority = notification?.notificationPriority,
             )
-        } catch (e: Exception) {
-            logger.trackInternalError(InternalErrorType.DataSourceDataCaptureFail, e)
         }
     }
 

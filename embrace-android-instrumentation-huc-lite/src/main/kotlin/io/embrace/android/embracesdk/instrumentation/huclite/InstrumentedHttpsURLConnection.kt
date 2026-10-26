@@ -8,11 +8,11 @@ import io.embrace.android.embracesdk.internal.utils.BuildVersionChecker
 import io.embrace.android.embracesdk.internal.utils.VersionChecker
 import java.io.InputStream
 import java.io.OutputStream
+import java.net.URL
 import java.security.Permission
 import java.security.Principal
 import java.security.cert.Certificate
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
 import javax.net.ssl.HostnameVerifier
 import javax.net.ssl.HttpsURLConnection
 import javax.net.ssl.SSLSocketFactory
@@ -29,7 +29,6 @@ internal class InstrumentedHttpsURLConnection(
 ) : HttpsURLConnection(wrappedConnection.url) {
 
     private val requestTriggered = AtomicBoolean(false)
-    private val cachedResponseStatusCode: AtomicInteger = AtomicInteger(0)
     private val requestData: RequestData? =
         hucLiteDataSource.createRequestData(
             wrappedConnection = wrappedConnection,
@@ -227,6 +226,8 @@ internal class InstrumentedHttpsURLConnection(
 
     // Pass-through methods from URLConnection that won't be instrumented directly
 
+    override fun getURL(): URL = wrappedConnection.url
+
     override fun addRequestProperty(key: String?, value: String?) {
         wrappedConnection.addRequestProperty(key, value)
     }
@@ -293,23 +294,32 @@ internal class InstrumentedHttpsURLConnection(
             requestData?.startRequest()
         }
 
-        try {
-            val returnValue = wrappedMethod().also {
-                if (cachedResponseStatusCode.get() == 0) {
-                    cachedResponseStatusCode.compareAndSet(0, wrappedConnection.responseCode)
-                }
-            }
-
-            if (instrument) {
-                requestData?.completeRequest(cachedResponseStatusCode.get())
-            }
-
-            return returnValue
+        val returnValue = try {
+            wrappedMethod()
         } catch (th: Throwable) {
             if (instrument) {
                 requestData?.clientError(th)
             }
             throw th
         }
+
+        if (instrument) {
+            recordResponse()
+        }
+        return returnValue
+    }
+
+    /**
+     * Reads the status code for instrumentation without letting it escape. Methods such as [getErrorStream] or
+     * [getHeaderField] return null/-1 after a failed request, whereas [getResponseCode] rethrows the cached IOException.
+     */
+    private fun recordResponse() {
+        val responseCode = try {
+            wrappedConnection.responseCode
+        } catch (t: Throwable) {
+            requestData?.clientError(t)
+            return
+        }
+        requestData?.completeRequest(responseCode)
     }
 }

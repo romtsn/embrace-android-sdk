@@ -1,8 +1,10 @@
 package io.embrace.android.embracesdk.internal.otel.spans
 
 import io.embrace.android.embracesdk.fakes.FakeClock
+import io.embrace.android.embracesdk.fakes.FakeErrorHandler
 import io.embrace.android.embracesdk.fakes.FakeInternalTelemetryService
 import io.embrace.android.embracesdk.fakes.FakeOtelKotlinClock
+import io.embrace.android.embracesdk.fakes.FakeSpanProcessor
 import io.embrace.android.embracesdk.fakes.OtelSdkMode
 import io.embrace.android.embracesdk.fakes.fakeOpenTelemetry
 import io.embrace.android.embracesdk.internal.arch.schema.EmbType
@@ -40,15 +42,22 @@ internal class EmbraceSpanFactoryImplTest(
     @Before
     fun setup() {
         val openTelemetryClock = FakeOtelKotlinClock(clock)
-        spanRepository = SpanRepository().apply {
+        spanRepository = SpanRepository(FakeErrorHandler()).apply {
             addSpanChangeListener { updateNotified = true }
         }
-        tracer = createSdkOtelInstance(clock = openTelemetryClock, useKotlinSdk = otelSdkMode.useKotlinSdk).getTracer("my_tracer")
+        tracer = createSdkOtelInstance(
+            clock = openTelemetryClock,
+            useKotlinSdk = otelSdkMode.useKotlinSdk,
+            tracerProvider = {
+                export { FakeSpanProcessor() }
+            },
+        ).getTracer("my_tracer")
         embraceSpanFactory = EmbraceSpanFactoryImpl(
             openTelemetryClock = openTelemetryClock,
             spanRepository = spanRepository,
             dataValidator = DataValidator(telemetryService = FakeInternalTelemetryService()),
             telemetryService = FakeInternalTelemetryService(),
+            errorHandler = FakeErrorHandler(),
         )
     }
 

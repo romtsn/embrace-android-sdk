@@ -12,10 +12,11 @@ import io.embrace.android.embracesdk.assertions.waitUntilConditionMet
 import io.embrace.android.embracesdk.internal.arch.schema.EmbType
 import io.embrace.android.embracesdk.internal.arch.state.ProcessState
 import io.embrace.android.embracesdk.internal.clock.nanosToMillis
+import io.embrace.android.embracesdk.internal.config.PersistedConfig
 import io.embrace.android.embracesdk.internal.config.remote.RemoteConfig
 import io.embrace.android.embracesdk.internal.config.source.ConfigHttpResponse
 import io.embrace.android.embracesdk.internal.delivery.debug.DeliveryTracer
-import io.embrace.android.embracesdk.internal.injection.InitModule
+import io.embrace.android.embracesdk.internal.serialization.PlatformSerializer
 import io.embrace.android.embracesdk.internal.instance.SdkState
 import io.embrace.android.embracesdk.internal.otel.sdk.findAttributeValue
 import io.embrace.android.embracesdk.internal.payload.Envelope
@@ -49,7 +50,7 @@ import java.util.concurrent.TimeoutException
  * specifically in what its payload looks like.
  */
 internal class EmbracePayloadAssertionInterface(
-    initModule: InitModule,
+    internal val serializer: PlatformSerializer,
     private val deliveryTracer: DeliveryTracer,
     private val apiServer: FakeApiServer?,
     private val sdkStateSupplier: () -> SdkState,
@@ -64,8 +65,6 @@ internal class EmbracePayloadAssertionInterface(
      */
     val sdkState: SdkState
         get() = sdkStateSupplier()
-
-    internal val serializer by lazy { initModule.jsonSerializer }
 
     /*** LOGS ***/
 
@@ -202,19 +201,24 @@ internal class EmbracePayloadAssertionInterface(
     }
 
     /**
+     * Returns the If-None-Match header of each config request, or null where it was not sent.
+     */
+    internal fun getConfigRequestEtags(): List<String?> = checkNotNull(apiServer).getConfigRequestEtags()
+
+    /**
      * Asserts that config was persisted on disk and returns the persisted information.
      */
     internal fun readPersistedConfigResponse(): ConfigHttpResponse {
         val ctx = ApplicationProvider.getApplicationContext<Context>()
-        val storageDir = File(ctx.filesDir, "embrace_remote_config")
+        val storageDir = File(ctx.filesDir, PersistedConfig.STORAGE_DIR_NAME)
         if (!storageDir.exists()) {
             throw IllegalStateException("Config storage directory does not exist.")
         }
-        val responseFile = File(storageDir, "most_recent_response")
+        val responseFile = File(storageDir, PersistedConfig.CONFIG_RESPONSE_FILE_NAME)
         if (!responseFile.exists()) {
             throw IllegalStateException("Config response file does not exist.")
         }
-        val etagFile = File(storageDir, "etag")
+        val etagFile = File(storageDir, PersistedConfig.ETAG_FILE_NAME)
         if (!etagFile.exists()) {
             throw IllegalStateException("Config etag file does not exist.")
         }
@@ -368,6 +372,7 @@ internal class EmbracePayloadAssertionInterface(
             else ->
                 returnIfConditionMet(
                     waitTimeMs = waitTimeMs,
+                    checkIntervalMs = 1,
                     desiredValueSupplier = supplier,
                     dataProvider = supplier,
                     condition = { data ->

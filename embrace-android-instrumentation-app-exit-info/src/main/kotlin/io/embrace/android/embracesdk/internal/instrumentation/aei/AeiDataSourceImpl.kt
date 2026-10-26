@@ -1,6 +1,5 @@
 package io.embrace.android.embracesdk.internal.instrumentation.aei
 
-import android.app.ActivityManager
 import android.app.ApplicationExitInfo
 import android.os.Build.VERSION_CODES
 import androidx.annotation.RequiresApi
@@ -9,7 +8,8 @@ import io.embrace.android.embracesdk.internal.arch.datasource.DataSourceImpl
 import io.embrace.android.embracesdk.internal.arch.datasource.LogSeverity
 import io.embrace.android.embracesdk.internal.arch.limits.UpToLimitStrategy
 import io.embrace.android.embracesdk.internal.arch.schema.SchemaType.AeiLog
-import io.embrace.android.embracesdk.internal.logging.InternalErrorType
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
+import io.embrace.android.embracesdk.internal.logging.guardSdkCode
 import io.embrace.android.embracesdk.internal.store.KeyValueStore
 import io.embrace.android.embracesdk.internal.store.Ordinal
 import io.embrace.android.embracesdk.internal.store.OrdinalStore
@@ -22,7 +22,7 @@ import io.embrace.android.embracesdk.internal.worker.BackgroundWorker
 internal class AeiDataSourceImpl(
     args: InstrumentationArgs,
     private val backgroundWorker: BackgroundWorker,
-    private val activityManagerProvider: Provider<ActivityManager?>,
+    private val recordSourceProvider: Provider<AeiRecordSource?>,
     private val store: KeyValueStore,
     private val ordinalStore: OrdinalStore,
     private val versionChecker: VersionChecker = BuildVersionChecker,
@@ -39,58 +39,80 @@ internal class AeiDataSourceImpl(
         private const val AEI_HASH_CODES = "io.embrace.aeiHashCode"
     }
 
+    private val lock = Any()
+    private var closed = false
+
     override fun onDataCaptureEnabled() {
         backgroundWorker.submit {
-            try {
-                processAeiRecords()
-            } catch (exc: Throwable) {
-                logger.trackInternalError(InternalErrorType.ProcessAeiRecords, exc)
-            }
+            errorHandler.guardSdkCode(SdkErrorType.ProcessAeiRecords, ::processAeiRecords)
         }
     }
 
+    override fun onDataCaptureDisabled() {
+        synchronized(lock) {
+            closed = true
+        }
+    }
+
+    private fun isClosed(): Boolean = synchronized(lock) { closed }
+
     private fun processAeiRecords() {
-        val activityManager = activityManagerProvider() ?: return
+        if (isClosed()) {
+            return
+        }
+        val recordSource = recordSourceProvider() ?: return
         val maxNum = configService.config.aei.maxNum
-        val records = activityManager.getHistoricalProcessExitReasons(null, 0, maxNum).take(SDK_AEI_SEND_LIMIT)
+        val records = recordSource.getHistoricalProcessExitReasons(maxNum).take(SDK_AEI_SEND_LIMIT)
         val deliveredIds = store.deliveredAeiIds
 
         // update persisted state on what records were sent
         val unsentRecords = records.filter { !deliveredIds.contains(it.getAeiId()) }
         val sentRecords = records.minus(unsentRecords.toSet())
-        store.deliveredAeiIds = sentRecords.map { it.getAeiId() }.toSet()
+        synchronized(lock) {
+            if (closed) {
+                return
+            }
+            store.deliveredAeiIds = sentRecords.map { it.getAeiId() }.toSet()
+        }
 
         unsentRecords.forEach {
-            val obj = it.constructAeiObject(versionChecker, configService.config.aei.traceMaxLimit)
-            val crashNumber = obj?.getOrdinal { ordinalStore.incrementAndGet(Ordinal.CRASH) }
-            val aeiNumber = obj?.getOrdinal { ordinalStore.incrementAndGet(Ordinal.AEI_CRASH) }
-            if (obj == null) {
-                return@forEach
-            }
-            captureTelemetry {
-                val capture = configService.config.autoDataCapture.nativeCrashCaptureEnabled || !obj.hasNativeTombstone()
-                if (capture) {
-                    val schemaType = AeiLog(
-                        sessionPartId = obj.sessionPartId,
-                        sessionIdError = obj.sessionIdError,
-                        importance = obj.importance,
-                        pss = obj.pss,
-                        reason = obj.reason,
-                        rss = obj.rss,
-                        status = obj.status,
-                        timestamp = obj.timestamp,
-                        description = obj.description,
-                        traceStatus = obj.traceStatus,
-                        crashNumber = crashNumber,
-                        aeiNumber = aeiNumber,
-                        userSessionId = obj.userSessionId,
-                    )
-                    addLog(schemaType, LogSeverity.INFO, obj.trace ?: "")
+            val obj = it.constructAeiObject(versionChecker, configService.config.aei.traceMaxLimit) ?: return@forEach
+            // hold the lock so nothing is persisted after the SDK has been disabled
+            synchronized(lock) {
+                if (closed) {
+                    return
                 }
-
-                // always count AEI as delivered once we process it & submit to the OTel logging system, or discard
-                store.deliveredAeiIds = store.deliveredAeiIds.plus(obj.getAeiId())
+                val crashNumber = obj.getOrdinal { ordinalStore.incrementAndGet(Ordinal.CRASH) }
+                val aeiNumber = obj.getOrdinal { ordinalStore.incrementAndGet(Ordinal.AEI_CRASH) }
+                captureRecord(obj, crashNumber, aeiNumber)
             }
+        }
+    }
+
+    private fun captureRecord(obj: AppExitInfoData, crashNumber: Int?, aeiNumber: Int?) {
+        captureTelemetry {
+            val capture = configService.config.autoDataCapture.nativeCrashCaptureEnabled || !obj.hasNativeTombstone()
+            if (capture) {
+                val schemaType = AeiLog(
+                    sessionPartId = obj.sessionPartId,
+                    sessionIdError = obj.sessionIdError,
+                    importance = obj.importance,
+                    pss = obj.pss,
+                    reason = obj.reason,
+                    rss = obj.rss,
+                    status = obj.status,
+                    timestamp = obj.timestamp,
+                    description = obj.description,
+                    traceStatus = obj.traceStatus,
+                    crashNumber = crashNumber,
+                    aeiNumber = aeiNumber,
+                    userSessionId = obj.userSessionId,
+                )
+                addLog(schemaType, LogSeverity.INFO, obj.trace ?: "")
+            }
+
+            // always count AEI as delivered once we process it & submit to the OTel logging system, or discard
+            store.deliveredAeiIds = store.deliveredAeiIds.plus(obj.getAeiId())
         }
     }
 
@@ -107,6 +129,6 @@ internal class AeiDataSourceImpl(
         get() = store.getStringSet(AEI_HASH_CODES) ?: emptySet()
         set(value) = store.editAndCommit { putStringSet(AEI_HASH_CODES, value) }
 
-    private fun ApplicationExitInfo.getAeiId(): String = "${timestamp}_$pid"
+    private fun AeiRecord.getAeiId(): String = "${timestamp}_$pid"
     private fun AppExitInfoData.getAeiId(): String = "${timestamp}_$pid"
 }

@@ -15,8 +15,9 @@ import io.embrace.android.embracesdk.internal.arch.schema.SchemaType
 import io.embrace.android.embracesdk.internal.clock.Clock
 import io.embrace.android.embracesdk.internal.instrumentation.network.getOverriddenURLString
 import io.embrace.android.embracesdk.internal.instrumentation.network.toStatusCodeString
-import io.embrace.android.embracesdk.internal.logging.InternalErrorType
-import io.embrace.android.embracesdk.internal.logging.InternalLogger
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
+import io.embrace.android.embracesdk.internal.logging.guardSdkCode
 import io.embrace.android.embracesdk.internal.network.http.HttpRequestInfoModifierChain
 import io.embrace.android.embracesdk.internal.network.http.MutableHttpRequestInfoImpl
 import io.embrace.android.embracesdk.internal.telemetry.AppliedLimitType
@@ -34,12 +35,14 @@ import java.net.URLStreamHandler
 import java.net.URLStreamHandlerFactory
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import javax.net.ssl.HttpsURLConnection
 
 class HucLiteDataSource(
     private val args: InstrumentationArgs,
     private val streamHandlerFactoryFieldProvider: () -> Field? = ::defaultFactoryFieldProvider,
     private val factoryInstaller: (URLStreamHandlerFactory) -> Unit = URL::setURLStreamHandlerFactory,
+    private val httpsHandlerClassProvider: () -> Class<*> = ::defaultHttpsHandlerClass,
 ) : DataSourceImpl(
     args = args,
     limitStrategy = NoopLimitStrategy,
@@ -50,17 +53,24 @@ class HucLiteDataSource(
     private val recordForUrl = args.configService.networkBehavior::isUrlEnabled
     private var initializationAttempted = false
 
+    private val dataSourceRef = AtomicReference<HucLiteDataSource?>(this)
+
     override fun onDataCaptureEnabled() {
+        dataSourceRef.set(this)
         if (!initializationAttempted) {
             try {
                 installURLStreamHandlerFactory(
                     clock = args.clock,
-                    logger = args.logger,
+                    errorHandler = args.errorHandler,
                 )
             } finally {
                 initializationAttempted = true
             }
         }
+    }
+
+    override fun onDataCaptureDisabled() {
+        dataSourceRef.set(null)
     }
 
     fun createRequestData(
@@ -77,11 +87,11 @@ class HucLiteDataSource(
                     },
                     clock = clock,
                     telemetryDestination = telemetryDestination,
-                    errorHandler = ::errorHandler,
+                    errorHandler = ::trackCaptureError,
                     httpRequestInfoModifierChain = args.httpRequestInfoModifierChain,
                 )
             }.onFailure {
-                errorHandler(it)
+                trackCaptureError(it)
             }.getOrNull()
         } else {
             null
@@ -90,16 +100,16 @@ class HucLiteDataSource(
 
     private fun installURLStreamHandlerFactory(
         clock: Clock,
-        logger: InternalLogger,
+        errorHandler: ErrorHandler,
     ) {
-        runCatching {
-            @SuppressLint("PrivateApi")
-            val httpsHandlerClass = Class.forName("com.android.okhttp.HttpsHandler")
+        errorHandler.guardSdkCode(SdkErrorType.UrlStreamHandlerFactoryInstallFail) {
+            val httpsHandlerClass = httpsHandlerClassProvider()
+            val dataSourceProvider = dataSourceRef::get
             val instrumentedUrlStreamHandlerFactoryProvider = {
                 InstrumentedUrlStreamHandlerFactory(
                     httpsHandler = httpsHandlerClass.getDeclaredConstructor().newInstance() as URLStreamHandler,
                     clock = clock,
-                    hucLiteDataSource = this,
+                    dataSourceProvider = dataSourceProvider,
                 )
             }
 
@@ -112,7 +122,7 @@ class HucLiteDataSource(
                             delegateHandlerFactory = existingFactory,
                             instrumentedHandlerFactory = instrumentedUrlStreamHandlerFactoryProvider,
                             clock = clock,
-                            hucLiteDataSource = this,
+                            dataSourceProvider = dataSourceProvider,
                         )
                     } else {
                         null
@@ -120,13 +130,11 @@ class HucLiteDataSource(
                 }
 
             factoryInstaller(newFactory ?: instrumentedUrlStreamHandlerFactoryProvider())
-        }.onFailure {
-            logger.trackInternalError(InternalErrorType.UrlStreamHandlerFactoryInstallFail, it)
         }
     }
 
-    private fun errorHandler(t: Throwable) {
-        logger.trackInternalError(InternalErrorType.DataSourceDataCaptureFail, InstrumentationException(t))
+    private fun trackCaptureError(t: Throwable) {
+        errorHandler.trackSdkError(SdkErrorType.DataSourceDataCaptureFail, InstrumentationException(t))
     }
 
     class RequestData(
@@ -277,6 +285,9 @@ class HucLiteDataSource(
         cause: Throwable,
     ) : RuntimeException("Unexpected error during HUC instrumentation", cause)
 }
+
+@SuppressLint("PrivateApi")
+private fun defaultHttpsHandlerClass(): Class<*> = Class.forName("com.android.okhttp.HttpsHandler")
 
 private fun defaultFactoryFieldProvider(): Field? {
     val fields = URL::class.java.declaredFields

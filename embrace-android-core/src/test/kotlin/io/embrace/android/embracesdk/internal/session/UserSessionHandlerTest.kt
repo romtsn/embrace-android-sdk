@@ -5,6 +5,7 @@ import io.embrace.android.embracesdk.fakes.FakeClock
 import io.embrace.android.embracesdk.fakes.FakeConfigService
 import io.embrace.android.embracesdk.fakes.FakeEnvelopeMetadataSource
 import io.embrace.android.embracesdk.fakes.FakeEnvelopeResourceSource
+import io.embrace.android.embracesdk.fakes.FakeLogEnvelopeSource
 import io.embrace.android.embracesdk.fakes.FakeMetadataService
 import io.embrace.android.embracesdk.fakes.FakeOtelPayloadMapper
 import io.embrace.android.embracesdk.fakes.FakeProcessStateTracker
@@ -15,16 +16,15 @@ import io.embrace.android.embracesdk.fakes.FakeUserSessionPropertiesService
 import io.embrace.android.embracesdk.fakes.OtelSdkMode
 import io.embrace.android.embracesdk.fakes.createSessionBehavior
 import io.embrace.android.embracesdk.fakes.fakeSessionPartToken
-import io.embrace.android.embracesdk.fakes.injection.FakeInitModule
-import io.embrace.android.embracesdk.fakes.injection.FakePayloadSourceModule
+import io.embrace.android.embracesdk.fakes.injection.TestInitServices
 import io.embrace.android.embracesdk.internal.arch.state.ProcessState
 import io.embrace.android.embracesdk.internal.capture.session.UserSessionPropertiesService
 import io.embrace.android.embracesdk.internal.config.resolved.EmbraceConfig
 import io.embrace.android.embracesdk.internal.config.resolved.PersistenceConfig
 import io.embrace.android.embracesdk.internal.envelope.session.SessionPartEnvelopeSourceImpl
 import io.embrace.android.embracesdk.internal.envelope.session.SessionPartPayloadSourceImpl
-import io.embrace.android.embracesdk.internal.logging.InternalLogger
-import io.embrace.android.embracesdk.internal.logging.InternalLoggerImpl
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
+import io.embrace.android.embracesdk.internal.logging.ErrorHandlerImpl
 import io.embrace.android.embracesdk.internal.otel.spans.SpanRepository
 import io.embrace.android.embracesdk.internal.otel.spans.SpanService
 import io.embrace.android.embracesdk.internal.payload.Envelope
@@ -70,7 +70,7 @@ internal class UserSessionHandlerTest(
     private lateinit var payloadFactory: PayloadFactory
     private lateinit var executorService: BlockingScheduledExecutorService
     private lateinit var worker: BackgroundWorker
-    private lateinit var logger: InternalLogger
+    private lateinit var errorHandler: ErrorHandler
     private lateinit var spanRepository: SpanRepository
     private lateinit var currentSessionPartSpan: CurrentSessionPartSpan
     private lateinit var userSessionPropertiesService: UserSessionPropertiesService
@@ -79,7 +79,7 @@ internal class UserSessionHandlerTest(
     fun before() {
         executorService = BlockingScheduledExecutorService()
         worker = BackgroundWorker(executorService)
-        logger = InternalLoggerImpl()
+        errorHandler = ErrorHandlerImpl()
         clock.setCurrentTime(NOW)
         userSessionPropertiesService = FakeUserSessionPropertiesService()
         metadataService = FakeMetadataService()
@@ -87,10 +87,10 @@ internal class UserSessionHandlerTest(
         configService = FakeConfigService(
             sessionBehavior = createSessionBehavior(),
         )
-        val initModule = FakeInitModule(clock = clock, otelSdkMode = otelSdkMode)
-        spanService = initModule.openTelemetryModule.spanService
-        spanRepository = initModule.openTelemetryModule.spanRepository
-        currentSessionPartSpan = initModule.openTelemetryModule.currentSessionPartSpan
+        val initServices = TestInitServices(clock = clock, otelSdkMode = otelSdkMode)
+        spanService = initServices.otelStack.spanService
+        spanRepository = initServices.otelStack.spanRepository
+        currentSessionPartSpan = initServices.otelStack.currentSessionPartSpan
         val partPayloadSource = SessionPartPayloadSourceImpl(
             null,
             currentSessionPartSpan,
@@ -98,10 +98,7 @@ internal class UserSessionHandlerTest(
             FakeOtelPayloadMapper(),
             FakeProcessStateTracker(),
             FakeClock(),
-            logger,
-        )
-        val payloadSourceModule = FakePayloadSourceModule(
-            partPayloadSource = partPayloadSource,
+            errorHandler,
         )
         val collator = PayloadMessageCollatorImpl(
             SessionPartEnvelopeSourceImpl(
@@ -112,7 +109,7 @@ internal class UserSessionHandlerTest(
             currentSessionPartSpan,
             FakeSessionIdsProvider(),
         )
-        payloadFactory = PayloadFactoryImpl(collator, payloadSourceModule.logEnvelopeSource, configService, logger)
+        payloadFactory = PayloadFactoryImpl(collator, FakeLogEnvelopeSource(), configService, errorHandler)
     }
 
     @Test

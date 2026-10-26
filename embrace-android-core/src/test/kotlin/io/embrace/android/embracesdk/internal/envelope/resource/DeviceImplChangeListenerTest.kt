@@ -1,21 +1,16 @@
 package io.embrace.android.embracesdk.internal.envelope.resource
 
-import android.view.WindowManager
-import androidx.test.ext.junit.runners.AndroidJUnit4
 import io.embrace.android.embracesdk.concurrency.BlockingScheduledExecutorService
-import io.embrace.android.embracesdk.fakes.FakeInternalLogger
+import io.embrace.android.embracesdk.fakes.FakeErrorHandler
 import io.embrace.android.embracesdk.internal.SystemInfo
 import io.embrace.android.embracesdk.internal.worker.BackgroundWorker
-import io.mockk.mockk
 import org.junit.Assert.assertEquals
 import org.junit.Test
-import org.junit.runner.RunWith
 
 /**
  * The values [DeviceImpl] retrieves asynchronously start out as placeholders, so anything holding
  * a resource built before they land needs to be told when they change.
  */
-@RunWith(AndroidJUnit4::class)
 internal class DeviceImplChangeListenerTest {
 
     @Test
@@ -49,7 +44,7 @@ internal class DeviceImplChangeListenerTest {
     @Test
     fun `a throwing listener does not prevent the others from being notified`() {
         val executor = BlockingScheduledExecutorService(blockingMode = true)
-        val device = createDevice(executor)
+        val device = createDevice(executor, FakeErrorHandler(throwOnSdkError = false))
 
         var count = 0
         device.addChangeListener { error("listener failed") }
@@ -59,10 +54,14 @@ internal class DeviceImplChangeListenerTest {
         assertEquals(3, count)
     }
 
-    private fun createDevice(executor: BlockingScheduledExecutorService) = DeviceImpl(
-        windowManagerProvider = { mockk<WindowManager>(relaxed = true) },
+    private fun createDevice(
+        executor: BlockingScheduledExecutorService,
+        errorHandler: FakeErrorHandler = FakeErrorHandler(),
+    ) = DeviceImpl(
+        windowManagerProvider = { null },
         backgroundWorker = BackgroundWorker(executor),
         systemInfo = SystemInfo(),
-        logger = FakeInternalLogger(),
+        errorHandler = errorHandler,
+        isEmulator = { false },
     ).apply { startAsyncRetrieval() }
 }

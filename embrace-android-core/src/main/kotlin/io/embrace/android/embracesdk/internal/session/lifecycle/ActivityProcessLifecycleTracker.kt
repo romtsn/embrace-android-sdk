@@ -43,7 +43,12 @@ import io.embrace.android.embracesdk.internal.injection.getSystemServiceSafe
 class ActivityProcessLifecycleTracker(
     private val application: Application,
     startupContext: Context?,
-    private val handler: Handler = Handler(Looper.getMainLooper()),
+    handler: Handler = Handler(Looper.getMainLooper()),
+    private val postDelayed: (Runnable, Long) -> Unit = handler::postDelayed,
+    private val removeCallbacks: (Runnable) -> Unit = handler::removeCallbacks,
+    private val runningAppProcesses: (Context) -> List<ActivityManager.RunningAppProcessInfo>? = {
+        it.getSystemServiceSafe<ActivityManager>(Context.ACTIVITY_SERVICE)?.runningAppProcesses
+    },
 ) : LifecycleTracker, Application.ActivityLifecycleCallbacks {
 
     private val lock = Any()
@@ -110,11 +115,11 @@ class ActivityProcessLifecycleTracker(
         runCatching {
             application.unregisterActivityLifecycleCallbacks(this)
         }
-        runCatching { handler.removeCallbacks(backgroundRunnable) }
+        runCatching { removeCallbacks(backgroundRunnable) }
     }
 
     override fun onActivityStarted(activity: Activity) {
-        handler.removeCallbacks(backgroundRunnable)
+        removeCallbacks(backgroundRunnable)
 
         val transitioned = synchronized(lock) {
             startedCounter++
@@ -137,7 +142,7 @@ class ActivityProcessLifecycleTracker(
             foreground && startedActivityCount() == 0
         }
         if (debounce) {
-            handler.postDelayed(backgroundRunnable, BACKGROUND_DEBOUNCE_MS)
+            postDelayed(backgroundRunnable, BACKGROUND_DEBOUNCE_MS)
         }
     }
 
@@ -174,9 +179,8 @@ class ActivityProcessLifecycleTracker(
      * a process running a foreground service is not showing any UI.
      */
     private fun Context?.isForegroundProcess(): Boolean = runCatching {
-        val manager = this?.getSystemServiceSafe<ActivityManager>(Context.ACTIVITY_SERVICE)
         val pid = Process.myPid()
-        val process = manager?.runningAppProcesses?.firstOrNull { it.pid == pid }
+        val process = this?.let(runningAppProcesses)?.firstOrNull { it.pid == pid }
         process?.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
     }.getOrDefault(false)
 

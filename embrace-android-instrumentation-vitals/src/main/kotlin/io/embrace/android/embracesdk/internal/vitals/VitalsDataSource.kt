@@ -17,6 +17,8 @@ import io.embrace.android.embracesdk.internal.arch.schema.EmbType
 import io.embrace.android.embracesdk.internal.arch.schema.SchemaType
 import io.embrace.android.embracesdk.internal.arch.state.ProcessState
 import io.embrace.android.embracesdk.internal.arch.state.ProcessStateListener
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
+import io.embrace.android.embracesdk.internal.logging.guardSdkCode
 import io.embrace.android.embracesdk.internal.utils.BuildVersionChecker
 import io.embrace.android.embracesdk.internal.utils.VersionChecker
 import io.embrace.android.embracesdk.internal.vitals.screenload.ScreenLoadResult
@@ -107,7 +109,7 @@ internal class VitalsDataSource(
 
     override fun onDataCaptureEnabled() {
         startSessionPart()
-        val vitalsScheduler = HandlerVitalsScheduler().apply { start() }
+        val vitalsScheduler = HandlerVitalsScheduler(args.errorHandler).apply { start() }
         this.vitalsScheduler = vitalsScheduler
         val handler = vitalsScheduler.handler
 
@@ -242,12 +244,12 @@ internal class VitalsDataSource(
     }
 
     internal fun displayRefreshIntervalNanos(): Long {
-        val refreshRate = runCatching {
+        val refreshRate = args.errorHandler.guardSdkCode(SdkErrorType.Ignored, NORMALIZED_REFRESH_RATE) {
             args.systemService<DisplayManager>(Context.DISPLAY_SERVICE)
                 ?.getDisplay(Display.DEFAULT_DISPLAY)
                 ?.refreshRate
                 ?: NORMALIZED_REFRESH_RATE
-        }.getOrDefault(NORMALIZED_REFRESH_RATE)
+        }
 
         val rate = if (refreshRate > 0f) refreshRate else NORMALIZED_REFRESH_RATE
         return (NANOS_PER_SECOND / rate).toLong()

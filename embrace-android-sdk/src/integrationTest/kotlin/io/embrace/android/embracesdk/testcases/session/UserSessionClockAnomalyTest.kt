@@ -1,8 +1,8 @@
 package io.embrace.android.embracesdk.testcases.session
 
 import io.embrace.android.embracesdk.assertions.getUserSessionId
-import io.embrace.android.embracesdk.fakes.FakeInternalLogger
-import io.embrace.android.embracesdk.internal.logging.InternalErrorType
+import io.embrace.android.embracesdk.fakes.FakeErrorHandler
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
 import io.embrace.android.embracesdk.testframework.OtelSdkMode
 import io.embrace.android.embracesdk.testframework.SdkIntegrationTestRule
 import io.embrace.android.embracesdk.testframework.actions.EmbraceSetupInterface
@@ -25,11 +25,11 @@ internal class UserSessionClockAnomalyTest(
     @Rule
     @JvmField
     val testRule: SdkIntegrationTestRule = SdkIntegrationTestRule(otelSdkMode) {
-        EmbraceSetupInterface().apply { getEmbLogger().throwOnInternalError = false }
+        EmbraceSetupInterface().apply { getFakeErrorHandler().throwOnSdkError = false }
     }
 
     @Test
-    fun `clock shifting backwards when creating new session part terminates existing user session and logs internal error`() {
+    fun `clock shifting backwards when creating new session part terminates existing user session and logs SDK error`() {
         testRule.runTest(
             testCaseAction = {
                 recordSession()
@@ -40,17 +40,17 @@ internal class UserSessionClockAnomalyTest(
             assertAction = {
                 val sessions = getSessionEnvelopes(2, assertOrdering = false)
                 assertDistinctUserSessions(sessions[0], sessions[1])
-                val logger = testRule.moduleGraph.initModule.logger as FakeInternalLogger
+                val errorHandler = testRule.services.errorHandler as FakeErrorHandler
 
-                assertTrue(logger.internalErrorMessages.any {
-                    it.msg == InternalErrorType.ClockBackwardsShift.toString()
+                assertTrue(errorHandler.sdkErrorMessages.any {
+                    it.msg == SdkErrorType.ClockBackwardsShift.toString()
                 })
             }
         )
     }
 
     @Test
-    fun `clock shifting backwards when loading existing user session terminates existing user session and logs internal error`() {
+    fun `clock shifting backwards when loading existing user session terminates existing user session and logs SDK error`() {
         // write a session that started in the future
         val staleUserSessionId = "stale-session-id"
         testRule.runTest(
@@ -69,9 +69,9 @@ internal class UserSessionClockAnomalyTest(
                 val session = getSingleSessionEnvelope()
                 assertNotEquals(staleUserSessionId, session.getUserSessionId())
 
-                val logger = testRule.moduleGraph.initModule.logger as FakeInternalLogger
-                assertTrue(logger.internalErrorMessages.any {
-                    it.msg == InternalErrorType.ClockBackwardsShift.toString()
+                val errorHandler = testRule.services.errorHandler as FakeErrorHandler
+                assertTrue(errorHandler.sdkErrorMessages.any {
+                    it.msg == SdkErrorType.ClockBackwardsShift.toString()
                 })
             }
         )

@@ -3,7 +3,9 @@ package io.embrace.android.embracesdk.instrumentation.leaks
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebView
-import io.embrace.android.embracesdk.internal.logging.InternalLogger
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
+import io.embrace.android.embracesdk.internal.logging.guardSdkCode
 
 internal object WebViewLeakScanner {
 
@@ -18,9 +20,9 @@ internal object WebViewLeakScanner {
      */
     private const val MAX_DEPTH = 40
 
-    fun scan(root: View?, logger: InternalLogger, onFound: (WebView) -> Unit) {
+    fun scan(root: View?, errorHandler: ErrorHandler, onFound: (WebView) -> Unit) {
         root ?: return
-        try {
+        errorHandler.guardSdkCode(SdkErrorType.UiCallbackFail) {
             var currentLevel: List<View> = listOf(root)
             var depth = 0
             while (currentLevel.isNotEmpty()) {
@@ -37,8 +39,6 @@ internal object WebViewLeakScanner {
                 currentLevel = nextLevel ?: emptyList()
                 depth++
             }
-        } catch (e: Throwable) {
-            logger.logError("Failed to scan view tree for WebView leak detection", e)
         }
     }
 }

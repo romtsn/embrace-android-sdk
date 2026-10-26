@@ -1,7 +1,8 @@
 package io.embrace.android.embracesdk.internal.session.persistence
 
-import io.embrace.android.embracesdk.internal.logging.InternalErrorType
-import io.embrace.android.embracesdk.internal.logging.InternalLogger
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
+import io.embrace.android.embracesdk.internal.logging.guardSdkCode
 import io.embrace.android.embracesdk.internal.payload.Span
 import io.embrace.android.embracesdk.internal.utils.SystemTrace
 import java.io.File
@@ -19,7 +20,7 @@ import java.io.IOException
  */
 class CompletedSpansWriter(
     private val target: SessionPartWriteTarget,
-    private val logger: InternalLogger,
+    private val errorHandler: ErrorHandler,
     private val maxBytes: Long = MAX_PART_FILE_BYTES,
     private val maxRecordBytes: Long = MAX_RECORD_BYTES,
     private val maxRecords: Int = MAX_PERSISTED_SPANS,
@@ -79,15 +80,30 @@ class CompletedSpansWriter(
     /**
      * The records of this batch the log can still hold. Reconstruction refuses to read past
      * [maxRecords] spans of a session part, so anything beyond it costs the write without ever
-     * being delivered.
+     * being delivered. The session span is exempt from [maxRecords].
      */
     private fun List<SpanProto>.capped(): List<SpanProto> {
-        val allowed = (maxRecords - records).coerceAtLeast(0)
+        var allowed = (maxRecords - records).coerceAtLeast(0)
         if (size <= allowed) {
             return this
         }
-        reportDrop()
-        return take(allowed)
+        val kept = ArrayList<SpanProto>(allowed + 1)
+        var sessionSpanRetained = false
+        for (span in this) {
+            if (span.isSessionSpan()) {
+                sessionSpanRetained = true
+                kept.add(span)
+            } else if (allowed > 0) {
+                kept.add(span)
+                allowed--
+            } else if (sessionSpanRetained) {
+                break
+            }
+        }
+        if (kept.size < size) {
+            reportDrop()
+        }
+        return kept
     }
 
     /**
@@ -109,11 +125,7 @@ class CompletedSpansWriter(
     private fun closeFile() {
         val open = file ?: return
         file = null
-        try {
-            open.close()
-        } catch (exc: IOException) {
-            trackFailure(exc)
-        }
+        errorHandler.guardSdkCode(SdkErrorType.CompletedSpansWriteFail, open::close)
     }
 
     private fun reportDrop() {
@@ -124,6 +136,6 @@ class CompletedSpansWriter(
     }
 
     private fun trackFailure(exc: Throwable) {
-        logger.trackInternalError(InternalErrorType.CompletedSpansWriteFail, exc)
+        errorHandler.trackSdkError(SdkErrorType.CompletedSpansWriteFail, exc)
     }
 }

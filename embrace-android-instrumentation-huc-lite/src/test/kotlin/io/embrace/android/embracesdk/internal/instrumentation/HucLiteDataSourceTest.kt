@@ -1,44 +1,41 @@
 package io.embrace.android.embracesdk.internal.instrumentation
 
-import androidx.test.core.app.ApplicationProvider
-import androidx.test.ext.junit.runners.AndroidJUnit4
 import io.embrace.android.embracesdk.fakes.FakeClock
 import io.embrace.android.embracesdk.fakes.FakeConfigService
+import io.embrace.android.embracesdk.fakes.FakeErrorHandler
+import io.embrace.android.embracesdk.fakes.FakeHttpsURLConnection
 import io.embrace.android.embracesdk.fakes.FakeInstrumentationArgs
-import io.embrace.android.embracesdk.fakes.FakeInternalLogger
 import io.embrace.android.embracesdk.fakes.FakeInternalTelemetryService
 import io.embrace.android.embracesdk.fakes.FakeTelemetryDestination
+import io.embrace.android.embracesdk.fakes.FakeURLStreamHandler
 import io.embrace.android.embracesdk.fakes.FakeURLStreamHandlerFactory
 import io.embrace.android.embracesdk.fakes.behavior.FakeNetworkBehavior
 import io.embrace.android.embracesdk.instrumentation.huclite.DelegatingInstrumentedURLStreamHandlerFactory
 import io.embrace.android.embracesdk.instrumentation.huclite.FAKE_TIME_MS
+import io.embrace.android.embracesdk.instrumentation.huclite.InstrumentedHttpsURLConnection
 import io.embrace.android.embracesdk.instrumentation.huclite.InstrumentedUrlStreamHandlerFactory
 import io.embrace.android.embracesdk.instrumentation.huclite.testUrl
 import io.embrace.android.embracesdk.internal.network.http.HttpRequestInfoModifierChain
 import io.embrace.android.embracesdk.internal.network.logging.EmbraceDomainCountLimiter
 import io.embrace.android.embracesdk.internal.telemetry.AppliedLimitType
-import io.mockk.every
-import io.mockk.mockk
 import io.opentelemetry.kotlin.semconv.HttpAttributes
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
-import org.junit.runner.RunWith
 import java.lang.reflect.Field
 import java.net.URL
 import java.net.URLStreamHandlerFactory
-import javax.net.ssl.HttpsURLConnection
 
-@RunWith(AndroidJUnit4::class)
 class HucLiteDataSourceTest {
     private lateinit var factoryFieldRef: Field
     private lateinit var fakeTelemetryDestination: FakeTelemetryDestination
     private lateinit var fakeTelemetryService: FakeInternalTelemetryService
     private lateinit var fakeClock: FakeClock
-    private lateinit var fakeEmbLogger: FakeInternalLogger
+    private lateinit var fakeErrorHandler: FakeErrorHandler
     private lateinit var domainCountLimiter: EmbraceDomainCountLimiter
-    private lateinit var mockedConnection: HttpsURLConnection
+    private lateinit var wrappedConnection: FakeHttpsURLConnection
     private lateinit var hucLiteDataSource: HucLiteDataSource
     private var staticFactorySetAttempts = 0
 
@@ -57,14 +54,8 @@ class HucLiteDataSourceTest {
         fakeTelemetryDestination = FakeTelemetryDestination()
         fakeTelemetryService = FakeInternalTelemetryService()
         fakeClock = FakeClock(FAKE_TIME_MS)
-        fakeEmbLogger = FakeInternalLogger(throwOnInternalError = false)
-        mockedConnection =
-            mockk<HttpsURLConnection>(relaxed = true).apply {
-                every { url } returns testUrl
-                every { requestMethod } returns "GET"
-                every { responseCode } answers { 200 }
-                every { getRequestProperty(any()) } returns null
-            }
+        fakeErrorHandler = FakeErrorHandler(throwOnSdkError = false)
+        wrappedConnection = FakeHttpsURLConnection(testUrl)
         hucLiteDataSource = createHucLiteDataSource()
     }
 
@@ -73,10 +64,9 @@ class HucLiteDataSourceTest {
         configureModifiers: (HttpRequestInfoModifierChain) -> Unit = {},
     ): HucLiteDataSource = HucLiteDataSource(
         args = FakeInstrumentationArgs(
-            application = ApplicationProvider.getApplicationContext(),
             configService = FakeConfigService(networkBehavior = networkBehavior),
             destination = fakeTelemetryDestination,
-            logger = fakeEmbLogger,
+            errorHandler = fakeErrorHandler,
             clock = fakeClock,
             telemetryService = fakeTelemetryService,
         ).apply { configureModifiers(httpRequestInfoModifierChain) },
@@ -85,13 +75,14 @@ class HucLiteDataSourceTest {
             factoryField = it
             attemptToSetURLStreamHandlerFactory(it)
         },
+        httpsHandlerClassProvider = { FakeURLStreamHandler::class.java },
     )
 
     @Test
     fun `specific domain limit enforced`() {
         repeat(5) {
             hucLiteDataSource.createRequestData(
-                wrappedConnection = mockedConnection,
+                wrappedConnection = wrappedConnection,
                 clock = fakeClock,
             )?.apply {
                 startRequest()
@@ -103,10 +94,10 @@ class HucLiteDataSourceTest {
 
     @Test
     fun `default limit enforced`() {
-        every { mockedConnection.url } returns URL("https://fakeurl.burger/test/xyz?doStuff=true")
+        wrappedConnection.urlProvider = { URL("https://fakeurl.burger/test/xyz?doStuff=true") }
         repeat(5) {
             hucLiteDataSource.createRequestData(
-                wrappedConnection = mockedConnection,
+                wrappedConnection = wrappedConnection,
                 clock = fakeClock,
             )?.apply {
                 startRequest()
@@ -121,7 +112,7 @@ class HucLiteDataSourceTest {
         // Make 5 requests - the last one should exceed the limit of 4 for testUrl.host
         repeat(5) {
             hucLiteDataSource.createRequestData(
-                wrappedConnection = mockedConnection,
+                wrappedConnection = wrappedConnection,
                 clock = fakeClock,
             )?.apply {
                 startRequest()
@@ -146,7 +137,7 @@ class HucLiteDataSourceTest {
         )
 
         ds.createRequestData(
-            wrappedConnection = mockedConnection,
+            wrappedConnection = wrappedConnection,
             clock = fakeClock,
         )?.apply {
             startRequest()
@@ -170,7 +161,7 @@ class HucLiteDataSourceTest {
         )
 
         ds.createRequestData(
-            wrappedConnection = mockedConnection,
+            wrappedConnection = wrappedConnection,
             clock = fakeClock,
         )?.apply {
             startRequest()
@@ -200,6 +191,29 @@ class HucLiteDataSourceTest {
         hucLiteDataSource.onDataCaptureEnabled()
         hucLiteDataSource.onDataCaptureEnabled()
         assertEquals(1, staticFactorySetAttempts)
+    }
+
+    @Test
+    fun `connections are not instrumented after capture is disabled`() {
+        hucLiteDataSource.onDataCaptureEnabled()
+        val handler = checkNotNull(factoryField).createURLStreamHandler("https")
+        assertTrue(URL(null, testUrl.toString(), handler).openConnection() is InstrumentedHttpsURLConnection)
+
+        hucLiteDataSource.onDataCaptureDisabled()
+        assertFalse(URL(null, testUrl.toString(), handler).openConnection() is InstrumentedHttpsURLConnection)
+
+        hucLiteDataSource.onDataCaptureEnabled()
+        assertTrue(URL(null, testUrl.toString(), handler).openConnection() is InstrumentedHttpsURLConnection)
+        assertEquals(1, staticFactorySetAttempts)
+    }
+
+    @Test
+    fun `delegating factory stops instrumenting after capture is disabled`() {
+        factoryField = FakeURLStreamHandlerFactory()
+        hucLiteDataSource.onDataCaptureEnabled()
+        hucLiteDataSource.onDataCaptureDisabled()
+        val handler = checkNotNull(factoryField).createURLStreamHandler("https")
+        assertFalse(URL(null, testUrl.toString(), handler).openConnection() is InstrumentedHttpsURLConnection)
     }
 
     private fun attemptToSetURLStreamHandlerFactory(

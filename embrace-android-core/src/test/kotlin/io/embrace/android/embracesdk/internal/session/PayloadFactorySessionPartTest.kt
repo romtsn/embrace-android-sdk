@@ -3,36 +3,30 @@ package io.embrace.android.embracesdk.internal.session
 import io.embrace.android.embracesdk.concurrency.BlockingScheduledExecutorService
 import io.embrace.android.embracesdk.fakes.FakeClock
 import io.embrace.android.embracesdk.fakes.FakeConfigService
+import io.embrace.android.embracesdk.fakes.FakeLogEnvelopeSource
 import io.embrace.android.embracesdk.fakes.FakeMetadataService
 import io.embrace.android.embracesdk.fakes.FakeProcessStateTracker
 import io.embrace.android.embracesdk.fakes.FakeSessionIdsProvider
+import io.embrace.android.embracesdk.fakes.FakeSessionPartEnvelopeSource
 import io.embrace.android.embracesdk.fakes.FakeSessionPartTracker
 import io.embrace.android.embracesdk.fakes.FakeUserService
 import io.embrace.android.embracesdk.fakes.OtelSdkMode
-import io.embrace.android.embracesdk.fakes.injection.FakeInitModule
-import io.embrace.android.embracesdk.fakes.injection.FakePayloadSourceModule
+import io.embrace.android.embracesdk.fakes.injection.TestInitServices
 import io.embrace.android.embracesdk.internal.arch.state.ProcessState
 import io.embrace.android.embracesdk.internal.capture.metadata.MetadataService
 import io.embrace.android.embracesdk.internal.capture.user.UserService
-import io.embrace.android.embracesdk.internal.logging.InternalLoggerImpl
+import io.embrace.android.embracesdk.internal.logging.ErrorHandlerImpl
 import io.embrace.android.embracesdk.internal.otel.spans.SpanRepository
 import io.embrace.android.embracesdk.internal.otel.spans.SpanService
 import io.embrace.android.embracesdk.internal.session.message.PayloadFactory
 import io.embrace.android.embracesdk.internal.session.message.PayloadFactoryImpl
 import io.embrace.android.embracesdk.internal.session.message.PayloadMessageCollatorImpl
 import io.embrace.android.embracesdk.internal.spans.CurrentSessionPartSpan
-import io.mockk.clearAllMocks
-import io.mockk.mockkStatic
-import io.mockk.unmockkAll
-import org.junit.After
-import org.junit.AfterClass
 import org.junit.Assert.assertEquals
 import org.junit.Before
-import org.junit.BeforeClass
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.runners.Parameterized
-import java.util.concurrent.ExecutorService
 
 @RunWith(Parameterized::class)
 internal class PayloadFactorySessionPartTest(
@@ -57,18 +51,6 @@ internal class PayloadFactorySessionPartTest(
         fun modes(): List<Array<Any>> = OtelSdkMode.parameters()
 
         private val appStateTracker = FakeProcessStateTracker()
-
-        @BeforeClass
-        @JvmStatic
-        fun beforeClass() {
-            mockkStatic(ExecutorService::class)
-        }
-
-        @AfterClass
-        @JvmStatic
-        fun afterClass() {
-            unmockkAll()
-        }
     }
 
     @Before
@@ -80,16 +62,11 @@ internal class PayloadFactorySessionPartTest(
         sessionTracker = FakeSessionPartTracker()
         activityService = FakeProcessStateTracker(ProcessState.BACKGROUND)
         userService = FakeUserService()
-        val initModule = FakeInitModule(clock = clock, otelSdkMode = otelSdkMode)
-        spanRepository = initModule.openTelemetryModule.spanRepository
-        currentSessionPartSpan = initModule.openTelemetryModule.currentSessionPartSpan
-        spanService = initModule.openTelemetryModule.spanService
+        val initServices = TestInitServices(clock = clock, otelSdkMode = otelSdkMode)
+        spanRepository = initServices.otelStack.spanRepository
+        currentSessionPartSpan = initServices.otelStack.currentSessionPartSpan
+        spanService = initServices.otelStack.spanService
         blockingExecutorService = BlockingScheduledExecutorService(blockingMode = false)
-    }
-
-    @After
-    fun after() {
-        clearAllMocks(answers = false)
     }
 
     @Test
@@ -101,13 +78,12 @@ internal class PayloadFactorySessionPartTest(
     private fun initializeSessionService() {
         appStateTracker.state = ProcessState.BACKGROUND
 
-        val payloadSourceModule = FakePayloadSourceModule()
-        val logger = InternalLoggerImpl()
+        val errorHandler = ErrorHandlerImpl()
         val collator = PayloadMessageCollatorImpl(
-            payloadSourceModule.sessionPartEnvelopeSource,
+            FakeSessionPartEnvelopeSource(),
             currentSessionPartSpan,
             FakeSessionIdsProvider(),
         )
-        service = PayloadFactoryImpl(collator, payloadSourceModule.logEnvelopeSource, FakeConfigService(), logger)
+        service = PayloadFactoryImpl(collator, FakeLogEnvelopeSource(), FakeConfigService(), errorHandler)
     }
 }

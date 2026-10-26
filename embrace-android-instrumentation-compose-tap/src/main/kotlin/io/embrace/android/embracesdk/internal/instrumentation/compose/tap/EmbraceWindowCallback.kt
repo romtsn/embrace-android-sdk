@@ -6,7 +6,9 @@ import android.view.KeyboardShortcutGroup
 import android.view.Menu
 import android.view.MotionEvent
 import android.view.Window
-import io.embrace.android.embracesdk.internal.logging.InternalLogger
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
+import io.embrace.android.embracesdk.internal.logging.guardSdkCode
 
 /**
  * Custom Window callback that triggers onTouch event
@@ -14,18 +16,25 @@ import io.embrace.android.embracesdk.internal.logging.InternalLogger
  */
 internal class EmbraceWindowCallback(
     private val delegate: Window.Callback,
-    private val gestureDetector: GestureDetector,
-    private val logger: InternalLogger,
-) : Window.Callback by delegate {
+    gestureDetector: GestureDetector,
+    errorHandler: ErrorHandler,
+) : Window.Callback by delegate, AutoCloseable {
+
+    // nulled on close so that windows outliving the SDK do not retain it
+    @Volatile
+    private var tapCapture: TapCapture? = TapCapture(gestureDetector, errorHandler)
+
+    override fun close() {
+        tapCapture = null
+    }
 
     override fun dispatchTouchEvent(event: MotionEvent?): Boolean {
+        val capture = tapCapture ?: return delegate.dispatchTouchEvent(event)
         event?.let {
-            try {
+            capture.errorHandler.guardSdkCode(SdkErrorType.UiCallbackFail) {
                 val copy = MotionEvent.obtain(it)
-                gestureDetector.onTouchEvent(copy)
+                capture.gestureDetector.onTouchEvent(copy)
                 copy.recycle()
-            } catch (e: Throwable) {
-                logger.logError("Touch event dispatch failed", e)
             }
         }
 
@@ -47,4 +56,9 @@ internal class EmbraceWindowCallback(
             delegate.onProvideKeyboardShortcuts(data, menu, deviceId)
         }
     }
+
+    private class TapCapture(
+        val gestureDetector: GestureDetector,
+        val errorHandler: ErrorHandler,
+    )
 }

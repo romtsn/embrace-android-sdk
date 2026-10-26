@@ -3,7 +3,7 @@ package io.embrace.android.embracesdk.internal.instance
 import io.embrace.android.embracesdk.experiments.TrackedExperiment
 import io.embrace.android.embracesdk.experiments.TrackedFeatureFlag
 import io.embrace.android.embracesdk.fakes.FakeClock
-import io.embrace.android.embracesdk.fakes.FakeInternalLogger
+import io.embrace.android.embracesdk.fakes.FakeErrorHandler
 import io.embrace.android.embracesdk.fakes.FakeLogRecordExporter
 import io.embrace.android.embracesdk.fakes.FakeLogRecordProcessor
 import io.embrace.android.embracesdk.fakes.FakeSpanExporter
@@ -13,7 +13,7 @@ import io.embrace.android.embracesdk.internal.capture.experiment.ExperimentApiCa
 import io.embrace.android.embracesdk.internal.capture.experiment.ExperimentKind
 import io.embrace.android.embracesdk.internal.capture.experiment.TrackedData
 import io.embrace.android.embracesdk.internal.config.resolved.ExperimentConfig
-import io.embrace.android.embracesdk.internal.logging.InternalErrorType
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
 import io.embrace.android.embracesdk.spans.EmbraceSpan
 import io.embrace.android.embracesdk.spans.EmbraceSpanEvent
 import io.embrace.android.embracesdk.spans.ErrorCode
@@ -37,7 +37,7 @@ import kotlin.concurrent.thread
 internal class BufferingSdkInstanceTest {
 
     private lateinit var clock: FakeClock
-    private lateinit var logger: FakeInternalLogger
+    private lateinit var errorHandler: FakeErrorHandler
     private lateinit var target: RecordingSdkApi
     private lateinit var replayed: MutableList<List<ExperimentApiCall>>
     private lateinit var instance: BufferingSdkInstance
@@ -45,10 +45,10 @@ internal class BufferingSdkInstanceTest {
     @Before
     fun setUp() {
         clock = FakeClock(currentTime = 1000L)
-        logger = FakeInternalLogger(throwOnInternalError = false)
+        errorHandler = FakeErrorHandler(throwOnSdkError = false)
         target = RecordingSdkApi()
         replayed = mutableListOf()
-        instance = BufferingSdkInstance(clock, logger)
+        instance = BufferingSdkInstance(clock, errorHandler)
     }
 
     @Test
@@ -61,8 +61,18 @@ internal class BufferingSdkInstanceTest {
     }
 
     @Test
-    fun `getSdkCurrentTimeMs returns zero`() {
-        assertEquals(0, instance.getSdkCurrentTimeMs())
+    fun `getSdkCurrentTimeMs returns the clock time`() {
+        assertEquals(1000L, instance.getSdkCurrentTimeMs())
+    }
+
+    @Test
+    fun `completed span timed with getSdkCurrentTimeMs replays with its original times`() {
+        val startMs = instance.getSdkCurrentTimeMs()
+        clock.tick(100)
+        instance.recordCompletedSpan("span", startMs, instance.getSdkCurrentTimeMs())
+        clock.tick(500)
+        instance.drainCompletedSpans(target)
+        assertEquals(listOf("span:1000-1100"), target.calls)
     }
 
     @Test
@@ -221,6 +231,25 @@ internal class BufferingSdkInstanceTest {
 
         assertEquals(listOf("track_experiments:exp1", "untrack_feature_flags:flag1@20"), target.calls)
         assertTrue(replayed.isEmpty())
+    }
+
+    @Test
+    fun `calls are ignored after close`() {
+        instance.drainOTelConfig(target)
+        instance.recordCompletedSpan("buffered", 1, 2)
+        instance.trackExperiment("buffered", startedAt = 1L)
+        instance.close()
+
+        instance.setResourceAttribute("key", "value")
+        assertFalse(instance.recordCompletedSpan("span", 1, 2))
+        instance.trackExperiment("exp1", startedAt = 1L)
+        instance.applicationInitStart()
+        instance.drainCompletedSpans(target)
+        drainExperiments()
+
+        assertTrue(target.calls.isEmpty())
+        assertTrue(replayed.isEmpty())
+        assertNull(instance.applicationInitStartMs)
     }
 
     @Test
@@ -391,7 +420,7 @@ internal class BufferingSdkInstanceTest {
         instance.drainCompletedSpans(target)
 
         assertEquals(listOf("first:1-2", "second:3-4"), target.calls)
-        assertInternalErrorReported()
+        assertSdkErrorReported()
     }
 
     @Test
@@ -400,7 +429,7 @@ internal class BufferingSdkInstanceTest {
         instance.drainExperimentCalls(target) { error("replay failed") }
         instance.trackExperiment("exp2", startedAt = 2L)
         assertEquals(listOf("track_experiments:exp2"), target.calls)
-        assertInternalErrorReported()
+        assertSdkErrorReported()
     }
 
     @Test
@@ -409,15 +438,15 @@ internal class BufferingSdkInstanceTest {
         instance.logInfo("msg")
         assertEquals(
             "Embrace SDK is not initialized yet, cannot add_breadcrumb.",
-            logger.warningMessages.single().msg,
+            errorHandler.warningMessages.single().msg,
         )
         assertTrue(target.calls.isEmpty())
     }
 
-    private fun assertInternalErrorReported() {
+    private fun assertSdkErrorReported() {
         assertEquals(
-            listOf(InternalErrorType.PublicApiFail.toString()),
-            logger.internalErrorMessages.map { it.msg },
+            listOf(SdkErrorType.PublicApiFail.toString()),
+            errorHandler.sdkErrorMessages.map { it.msg },
         )
     }
 
@@ -425,7 +454,7 @@ internal class BufferingSdkInstanceTest {
         instance.drainExperimentCalls(target) { replayed.add(it) }
     }
 
-    private class RecordingSdkApi : SdkApi by NoopSdkInstance(FakeInternalLogger(), "") {
+    private class RecordingSdkApi : SdkApi by NoopSdkInstance(FakeClock(), FakeErrorHandler(), "") {
         val calls = mutableListOf<Any>()
         var recordResult = true
         var onRecordCompletedSpan: () -> Unit = {}

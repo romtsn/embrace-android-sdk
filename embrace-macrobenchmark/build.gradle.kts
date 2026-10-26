@@ -65,9 +65,17 @@ dependencies {
     implementation(libs.androidx.benchmark.macro.junit4)
 }
 
+configurations.configureEach {
+    resolutionStrategy.dependencySubstitution {
+        substitute(module("io.embrace:embrace-android-sdk")).using(project(":embrace-android-sdk"))
+    }
+}
+
+val baselineProfile = providers.gradleProperty("embrace.baselineProfile").isPresent
+
 androidComponents {
     beforeVariants(selector().all()) {
-        it.enable = it.buildType == "benchmark" || it.buildType == "baselineProfile"
+        it.enable = it.buildType == "benchmark" || (baselineProfile && it.buildType == "baselineProfile")
     }
 }
 

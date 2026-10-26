@@ -7,8 +7,10 @@ import android.util.DisplayMetrics
 import android.view.WindowManager
 import io.embrace.android.embracesdk.internal.SystemInfo
 import io.embrace.android.embracesdk.internal.isEmulator
-import io.embrace.android.embracesdk.internal.logging.InternalErrorType
-import io.embrace.android.embracesdk.internal.logging.InternalLogger
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
+import io.embrace.android.embracesdk.internal.logging.guardSdkCode
+import io.embrace.android.embracesdk.internal.logging.guardSdkCodeEach
 import io.embrace.android.embracesdk.internal.utils.Provider
 import io.embrace.android.embracesdk.internal.worker.BackgroundWorker
 import java.io.File
@@ -19,7 +21,8 @@ class DeviceImpl(
     private val windowManagerProvider: Provider<WindowManager?>,
     private val backgroundWorker: BackgroundWorker,
     override val systemInfo: SystemInfo,
-    private val logger: InternalLogger,
+    private val errorHandler: ErrorHandler,
+    private val isEmulator: () -> Boolean = { systemInfo.isEmulator() },
 ) : Device {
 
     @Volatile
@@ -61,12 +64,7 @@ class DeviceImpl(
     }
 
     private fun notifyChanged() {
-        listeners.forEach { listener ->
-            try {
-                listener()
-            } catch (ignored: Throwable) {
-            }
-        }
+        errorHandler.guardSdkCodeEach(SdkErrorType.DeviceChangeListenerFail, listeners) { it() }
     }
 
     private fun asyncRetrieveUsesEmmcStorage() {
@@ -85,7 +83,7 @@ class DeviceImpl(
 
     @Suppress("DEPRECATION")
     private fun getScreenResolution(windowManager: WindowManager?): String {
-        return try {
+        return errorHandler.guardSdkCode(SdkErrorType.ScreenResCaptureFail, "") {
             val display = windowManager?.defaultDisplay
             val displayMetrics = DisplayMetrics()
             display?.getMetrics(displayMetrics)
@@ -95,9 +93,6 @@ class DeviceImpl(
                 displayMetrics.widthPixels,
                 displayMetrics.heightPixels,
             )
-        } catch (ex: Exception) {
-            logger.trackInternalError(InternalErrorType.ScreenResCaptureFail, ex)
-            ""
         }
     }
 
@@ -115,7 +110,7 @@ class DeviceImpl(
      * @return true if the device is jailbroken and not an emulator, false otherwise
      */
     private fun checkIfIsJailbroken(): Boolean {
-        if (systemInfo.isEmulator()) {
+        if (isEmulator()) {
             return false
         }
         for (location in jailbreakLocations) {

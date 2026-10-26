@@ -2,6 +2,7 @@ package io.embrace.android.embracesdk.internal.otel.impl
 
 import io.embrace.android.embracesdk.fakes.FakeClock
 import io.embrace.android.embracesdk.fakes.FakeEmbraceSdkSpan
+import io.embrace.android.embracesdk.fakes.FakeErrorHandler
 import io.embrace.android.embracesdk.fakes.FakeOtelKotlinClock
 import io.embrace.android.embracesdk.fakes.FakeSpanService
 import io.embrace.android.embracesdk.fakes.FakeTracer
@@ -9,12 +10,20 @@ import io.embrace.android.embracesdk.fakes.OtelSdkMode
 import io.embrace.android.embracesdk.fakes.fakeOpenTelemetry
 import io.embrace.android.embracesdk.internal.arch.schema.EmbType
 import io.embrace.android.embracesdk.internal.clock.nanosToMillis
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
+import io.embrace.android.embracesdk.internal.otel.spans.EmbraceSdkSpan
+import io.embrace.android.embracesdk.internal.otel.spans.OtelSpanStartArgs
+import io.embrace.android.embracesdk.internal.otel.spans.SpanService
 import io.embrace.android.embracesdk.internal.otel.spans.createContext
 import io.opentelemetry.kotlin.NoopOpenTelemetry
 import io.opentelemetry.kotlin.tracing.SpanKind
+import io.opentelemetry.kotlin.tracing.StatusData
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -49,6 +58,7 @@ internal class EmbTracerTest(
             spanService = spanService,
             clock = openTelemetryClock,
             openTelemetry = openTelemetry,
+            errorHandler = FakeErrorHandler(),
         )
     }
 
@@ -107,5 +117,36 @@ internal class EmbTracerTest(
             scope.detach()
         }
         assertNull(spanService.createdSpans.single().parent)
+    }
+
+    @Test
+    fun `span is ended with error status when action throws`() {
+        val exc = IllegalStateException("boom")
+        val thrown = assertThrows(IllegalStateException::class.java) {
+            tracer.startSpan("foo") {
+                throw exc
+            }
+        }
+        assertSame(exc, thrown)
+        with(spanService.createdSpans.single()) {
+            assertFalse(isRecording)
+            assertTrue(status is StatusData.Error)
+        }
+    }
+
+    @Test
+    fun `span creation failure returns an invalid span`() {
+        val errorHandler = FakeErrorHandler(throwOnSdkError = false)
+        val failingTracer = EmbTracer(
+            impl = sdkTracer,
+            spanService = object : SpanService by spanService {
+                override fun createSpan(otelSpanStartArgs: OtelSpanStartArgs): EmbraceSdkSpan = error("boom")
+            },
+            clock = openTelemetryClock,
+            openTelemetry = openTelemetry,
+            errorHandler = errorHandler,
+        )
+        assertFalse(failingTracer.startSpan("foo").isRecording())
+        assertEquals(SdkErrorType.SpanOperationFail.toString(), errorHandler.sdkErrorMessages.single().msg)
     }
 }

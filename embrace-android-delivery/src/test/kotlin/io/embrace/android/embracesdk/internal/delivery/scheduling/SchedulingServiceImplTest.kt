@@ -3,7 +3,7 @@ package io.embrace.android.embracesdk.internal.delivery.scheduling
 import io.embrace.android.embracesdk.concurrency.BlockableExecutorService
 import io.embrace.android.embracesdk.concurrency.BlockingScheduledExecutorService
 import io.embrace.android.embracesdk.fakes.FakeClock
-import io.embrace.android.embracesdk.fakes.FakeInternalLogger
+import io.embrace.android.embracesdk.fakes.FakeErrorHandler
 import io.embrace.android.embracesdk.fakes.FakeNetworkConnectivityService
 import io.embrace.android.embracesdk.fakes.FakePayloadStorageService
 import io.embrace.android.embracesdk.fakes.FakeRequestExecutionService
@@ -21,7 +21,8 @@ import io.embrace.android.embracesdk.internal.delivery.execution.ExecutionResult
 import io.embrace.android.embracesdk.internal.delivery.execution.ExecutionResult.Failure
 import io.embrace.android.embracesdk.internal.delivery.execution.ExecutionResult.Incomplete
 import io.embrace.android.embracesdk.internal.delivery.scheduling.SchedulingServiceImpl.Companion.INITIAL_DELAY_MS
-import io.embrace.android.embracesdk.internal.logging.InternalErrorType
+import io.embrace.android.embracesdk.internal.delivery.storage.PayloadStorageService
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
 import io.embrace.android.embracesdk.internal.payload.Envelope
 import io.embrace.android.embracesdk.internal.payload.Log
 import io.embrace.android.embracesdk.internal.payload.LogPayload
@@ -46,7 +47,7 @@ internal class SchedulingServiceImplTest {
     private lateinit var storageExecutor: BlockableExecutorService
     private lateinit var networkUpdateDispatchExecutor: BlockingScheduledExecutorService
     private lateinit var networkConnectivityService: FakeNetworkConnectivityService
-    private lateinit var logger: FakeInternalLogger
+    private lateinit var errorHandler: FakeErrorHandler
     private lateinit var schedulingService: SchedulingServiceImpl
 
     @Volatile
@@ -68,7 +69,7 @@ internal class SchedulingServiceImplTest {
             addFakePayload(fakeSessionStoredTelemetryMetadata)
         }
         executionService = FakeRequestExecutionService()
-        logger = FakeInternalLogger()
+        errorHandler = FakeErrorHandler()
         allSendsSucceed()
         schedulingService = SchedulingServiceImpl(
             storageService = storageService,
@@ -76,7 +77,7 @@ internal class SchedulingServiceImplTest {
             schedulingWorker = BackgroundWorker(schedulingExecutor),
             deliveryWorker = BackgroundWorker(deliveryExecutor),
             clock = clock,
-            logger = logger,
+            errorHandler = errorHandler,
         )
         networkConnectivityService.addNetworkConnectivityListener(schedulingService)
         networkUpdateDispatchExecutor.awaitExecutionCompletion()
@@ -282,18 +283,18 @@ internal class SchedulingServiceImplTest {
 
     @Test
     fun `unhandled exception during request sending will not be retried`() {
-        logger.throwOnInternalError = false
+        errorHandler.throwOnSdkError = false
         executionService.exceptionOnExecution = RuntimeException("die")
         waitForResurrectionAndDeliveryAttempt(2)
         assertEquals(0, executionService.sendAttempts())
         assertEquals(0, storageService.storedPayloadCount())
-        assertEquals(2, logger.internalErrorMessages.size)
+        assertEquals(2, errorHandler.sdkErrorMessages.size)
     }
 
     @Test
     fun `payload stream is closed when the request fails before the body is read`() {
         // simulate failure before payload body consumption
-        logger.throwOnInternalError = false
+        errorHandler.throwOnSdkError = false
         executionService.exceptionOnExecution = RuntimeException("die")
         waitForResurrectionAndDeliveryAttempt(2)
         assertEquals(0, executionService.sendAttempts())
@@ -774,10 +775,10 @@ internal class SchedulingServiceImplTest {
 
         assertEquals(0, executionService.sendAttempts())
         assertEquals(0, storageService.storedPayloadCount())
-        assertEquals(1, logger.internalErrorMessages.size)
+        assertEquals(1, errorHandler.sdkErrorMessages.size)
         assertEquals(
-            InternalErrorType.PayloadDeliveryFail.toString(),
-            logger.internalErrorMessages.single().msg,
+            SdkErrorType.PayloadDeliveryFail.toString(),
+            errorHandler.sdkErrorMessages.single().msg,
         )
     }
 
@@ -789,7 +790,7 @@ internal class SchedulingServiceImplTest {
 
         assertEquals(1, executionService.sendAttempts())
         assertEquals(0, storageService.storedPayloadCount())
-        assertTrue(logger.internalErrorMessages.isEmpty())
+        assertTrue(errorHandler.sdkErrorMessages.isEmpty())
     }
 
     @Test
@@ -807,9 +808,67 @@ internal class SchedulingServiceImplTest {
         assertEquals(0, storageService.storedPayloadCount())
     }
 
+    @Test
+    fun `a failure processing a delivery result does not block later payloads of the same type`() {
+        storageService.clearStorage()
+        storageService.addFakePayload(fakeSessionStoredTelemetryMetadata)
+        storageService.addFakePayload(fakeSessionStoredTelemetryMetadata2)
+        recreateSchedulingService(
+            storage = object : PayloadStorageService by storageService {
+                override fun delete(metadata: StoredTelemetryMetadata, callback: () -> Unit) {
+                    if (metadata == fakeSessionStoredTelemetryMetadata) {
+                        error("delete failed")
+                    }
+                    storageService.delete(metadata, callback)
+                }
+            },
+        )
+        allSendsRejected()
+        waitForResurrectionAndDeliveryAttempt(2)
+
+        assertEquals(2, executionService.sendAttempts())
+        assertEquals(
+            SdkErrorType.DeliverySchedulingFail.toString(),
+            errorHandler.sdkErrorMessages.single().msg,
+        )
+    }
+
+    @Test
+    fun `a failure preparing a delivery does not block later payloads of the same type`() {
+        storageService.clearStorage()
+        storageService.addFakePayload(fakeSessionStoredTelemetryMetadata)
+        storageService.addFakePayload(fakeSessionStoredTelemetryMetadata2)
+        recreateSchedulingService(
+            storage = object : PayloadStorageService by storageService {
+                override fun payloadSizeBytes(metadata: StoredTelemetryMetadata): Long {
+                    if (metadata == fakeSessionStoredTelemetryMetadata) {
+                        error("size check failed")
+                    }
+                    return storageService.payloadSizeBytes(metadata)
+                }
+            },
+        )
+        waitForResurrectionAndDeliveryAttempt(2)
+
+        assertEquals(1, executionService.sendAttempts())
+        assertEquals(0, storageService.storedPayloadCount())
+        assertEquals(
+            SdkErrorType.DeliverySchedulingFail.toString(),
+            errorHandler.sdkErrorMessages.single().msg,
+        )
+    }
+
+    @Test
+    fun `deliveries queued before shutdown are not sent`() {
+        waitForResurrection()
+        schedulingService.shutdown()
+        assertEquals(0, executionService.sendAttempts())
+        assertEquals(2, storageService.storedPayloadCount())
+    }
+
     @Test(expected = RejectedExecutionException::class)
     fun `test shutdown`() {
-        logger.throwOnInternalError = false
+        errorHandler.throwOnSdkError = false
         schedulingService.onResurrectionComplete()
         schedulingService.shutdown()
 
@@ -922,16 +981,21 @@ internal class SchedulingServiceImplTest {
     private fun storedSizeOf(metadata: StoredTelemetryMetadata): Long =
         storageService.payloadSizeBytes(metadata)
 
-    private fun useMaxPayloadBytes(maxPayloadBytes: Long) {
-        logger.throwOnInternalError = false
+    private fun useMaxPayloadBytes(maxPayloadBytes: Long) = recreateSchedulingService(maxPayloadBytes = maxPayloadBytes)
+
+    private fun recreateSchedulingService(
+        storage: PayloadStorageService = storageService,
+        maxPayloadBytes: Long = MAX_UPLOAD_PAYLOAD_BYTES,
+    ) {
+        errorHandler.throwOnSdkError = false
         networkConnectivityService.removeNetworkConnectivityListener(schedulingService)
         schedulingService = SchedulingServiceImpl(
-            storageService = storageService,
+            storageService = storage,
             executionService = executionService,
             schedulingWorker = BackgroundWorker(schedulingExecutor),
             deliveryWorker = BackgroundWorker(deliveryExecutor),
             clock = clock,
-            logger = logger,
+            errorHandler = errorHandler,
             maxPayloadBytes = maxPayloadBytes,
         )
         networkConnectivityService.addNetworkConnectivityListener(schedulingService)

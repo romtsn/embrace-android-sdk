@@ -10,7 +10,9 @@ import io.embrace.android.embracesdk.internal.arch.schema.SendMode
 import io.embrace.android.embracesdk.internal.arch.schema.TelemetryAttributes
 import io.embrace.android.embracesdk.internal.instrumentation.fcm.PushNotificationBreadcrumb
 import io.embrace.android.embracesdk.internal.instrumentation.fcm.fcmDataSource
-import io.embrace.android.embracesdk.internal.logging.InternalLogger
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
+import io.embrace.android.embracesdk.internal.logging.guardSdkCode
 import io.embrace.android.embracesdk.internal.logs.LogExceptionType
 import io.embrace.android.embracesdk.internal.logs.LogService
 import io.embrace.android.embracesdk.internal.logs.attachments.Attachment
@@ -33,7 +35,7 @@ import io.opentelemetry.kotlin.semconv.ExceptionAttributes
 internal class LogsApiDelegate(
     private val logService: Lazy<LogService>,
     private val attachmentService: AttachmentService,
-    private val logger: InternalLogger,
+    private val errorHandler: ErrorHandler,
     private val payloadStore: PayloadStore?,
     private val serializer: PlatformSerializer,
     private val telemetryService: InternalTelemetryService,
@@ -96,7 +98,7 @@ internal class LogsApiDelegate(
             else -> return
         }
         telemetryService.trackAppliedLimit("attachment", AppliedLimitType.DROP)
-        logger.logError(msg, RuntimeException(msg))
+        errorHandler.log(msg, RuntimeException(msg), severity = ErrorHandler.Severity.ERROR)
     }
 
     override fun logException(
@@ -145,7 +147,7 @@ internal class LogsApiDelegate(
         exceptionData: ExceptionData? = null,
         attachment: Attachment? = null,
     ) {
-        runCatching {
+        errorHandler.guardSdkCode(SdkErrorType.PublicApiFail) {
             val dst = logService.value
             sendLog(attributes, exceptionData, attachment, severity, dst, message)
         }

@@ -9,6 +9,7 @@ import io.embrace.android.embracesdk.fakes.FakeClock
 import io.embrace.android.embracesdk.fakes.FakeClock.Companion.DEFAULT_FAKE_CURRENT_TIME
 import io.embrace.android.embracesdk.fakes.FakeCustomTracedActivity
 import io.embrace.android.embracesdk.fakes.FakeDrawEventEmitter
+import io.embrace.android.embracesdk.fakes.FakeErrorHandler
 import io.embrace.android.embracesdk.fakes.FakeNotTracedActivity
 import io.embrace.android.embracesdk.fakes.FakeTracedActivity
 import io.embrace.android.embracesdk.fakes.FakeUiLoadEventListener
@@ -140,6 +141,20 @@ internal class UiLoadExtTest {
         assertDrawEvents()
     }
 
+    @Test
+    fun `closing the event emitter closes the draw event emitter in U`() {
+        createEventEmitter(sdkInt = UPSIDE_DOWN_CAKE, autoTraceEnabled = true, activityClass = Activity::class)
+        (eventEmitter as AutoCloseable).close()
+        assertTrue(drawEventEmitter.closed)
+    }
+
+    @Test
+    fun `closing the event emitter closes the draw event emitter in L`() {
+        createEventEmitter(sdkInt = LOLLIPOP, autoTraceEnabled = true, activityClass = Activity::class)
+        (eventEmitter as AutoCloseable).close()
+        assertTrue(drawEventEmitter.closed)
+    }
+
     private fun <T : Activity> createEventEmitter(sdkInt: Int, autoTraceEnabled: Boolean, activityClass: KClass<T>) {
         versionChecker = VersionChecker { min -> sdkInt >= min }
         val application = RuntimeEnvironment.getApplication()
@@ -152,6 +167,7 @@ internal class UiLoadExtTest {
             autoTraceEnabled = autoTraceEnabled,
             clock = clock,
             versionChecker = versionChecker,
+            errorHandler = FakeErrorHandler(),
         ).apply {
             application.registerActivityLifecycleCallbacks(asDispatchedOn(sdkInt))
             activityController = Robolectric.buildActivity(activityClass.java)

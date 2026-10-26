@@ -1,10 +1,10 @@
 package io.embrace.android.embracesdk.internal.arch
 
-import androidx.test.core.app.ApplicationProvider
-import androidx.test.ext.junit.runners.AndroidJUnit4
+import android.app.Application
 import io.embrace.android.embracesdk.concurrency.BlockingScheduledExecutorService
 import io.embrace.android.embracesdk.fakes.FakeConfigService
 import io.embrace.android.embracesdk.fakes.FakeDataSource
+import io.embrace.android.embracesdk.fakes.FakeErrorHandler
 import io.embrace.android.embracesdk.fakes.FakeInstrumentationArgs
 import io.embrace.android.embracesdk.fakes.FakeInstrumentationProvider
 import io.embrace.android.embracesdk.fakes.LazyInitStateDataSource
@@ -13,21 +13,19 @@ import io.embrace.android.embracesdk.fakes.TestStateDataSource
 import io.embrace.android.embracesdk.fakes.TestStateValue
 import io.embrace.android.embracesdk.internal.arch.datasource.DataSource
 import io.embrace.android.embracesdk.internal.arch.datasource.TelemetryDestination
-import io.embrace.android.embracesdk.internal.logging.InternalLoggerImpl
+import io.embrace.android.embracesdk.internal.logging.ErrorHandlerImpl
 import io.embrace.android.embracesdk.internal.worker.BackgroundWorker
 import io.embrace.android.embracesdk.semconv.EmbStateTransitionAttributes
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
-import org.junit.runner.RunWith
-import org.robolectric.RuntimeEnvironment
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
-@RunWith(AndroidJUnit4::class)
 internal class InstrumentationRegistryTest {
 
     private lateinit var registry: InstrumentationRegistry
@@ -37,17 +35,17 @@ internal class InstrumentationRegistryTest {
 
     @Before
     fun setUp() {
-        dataSource = FakeDataSource(RuntimeEnvironment.getApplication())
+        dataSource = FakeDataSource(Application())
         configService = FakeConfigService()
         executorService = BlockingScheduledExecutorService(blockingMode = false)
         registry = InstrumentationRegistryImpl(
-            InternalLoggerImpl(),
+            ErrorHandlerImpl(),
         )
     }
 
     @Test
     fun `test instrumentation provider load`() {
-        val args = FakeInstrumentationArgs(ApplicationProvider.getApplicationContext())
+        val args = FakeInstrumentationArgs(Application())
         val initOrder = mutableListOf<Int>()
         val providers = listOf<InstrumentationProvider>(
             FakeInstrumentationProvider(1000, initOrder::add),
@@ -56,6 +54,21 @@ internal class InstrumentationRegistryTest {
         )
         registry.loadInstrumentations(providers, args)
         assertEquals(listOf(10, 100, 1000), initOrder)
+    }
+
+    @Test
+    fun `a provider that throws before registering does not stop the providers after it`() {
+        val args = FakeInstrumentationArgs(Application())
+        val initOrder = mutableListOf<Int>()
+        val broken = object : InstrumentationProvider {
+            override val priority: Int = 10
+            override val asyncInit: Boolean
+                get() = throw NoClassDefFoundError("boom")
+
+            override fun register(args: InstrumentationArgs) = null
+        }
+        registry.loadInstrumentations(listOf(broken, FakeInstrumentationProvider(100, initOrder::add)), args)
+        assertEquals(listOf(100), initOrder)
     }
 
     @Test
@@ -79,12 +92,19 @@ internal class InstrumentationRegistryTest {
     }
 
     @Test
-    fun `data source added after close is disabled and not registered`() {
+    fun `data source added after close is not created or registered`() {
         registry.close()
-        assertNull(registry.add { dataSource })
+        var invoked = false
+        assertNull(
+            registry.add {
+                invoked = true
+                dataSource
+            },
+        )
+        assertFalse(invoked)
         assertNull(registry.findByType(FakeDataSource::class))
         assertEquals(0, dataSource.enableDataCaptureCount)
-        assertEquals(1, dataSource.disableDataCaptureCount)
+        assertEquals(0, dataSource.disableDataCaptureCount)
     }
 
     @Test
@@ -101,7 +121,7 @@ internal class InstrumentationRegistryTest {
 
         registry.loadInstrumentations(
             instrumentationProviders = listOf(provider),
-            args = FakeInstrumentationArgs(ApplicationProvider.getApplicationContext()),
+            args = FakeInstrumentationArgs(Application()),
         )
         registry.onPreSessionEnd()
         registry.onPostSessionChange()
@@ -110,10 +130,26 @@ internal class InstrumentationRegistryTest {
     }
 
     @Test
+    fun `a data source that throws in a session hook does not stop the sources after it`() {
+        val errorHandler = FakeErrorHandler(throwOnSdkError = false)
+        registry = InstrumentationRegistryImpl(errorHandler)
+        registry.add { ThrowingDataSource() }
+        registry.add { dataSource }
+
+        registry.onPreSessionEnd()
+        registry.onPostSessionChange()
+
+        assertEquals(1, dataSource.sessionEnds)
+        assertEquals(1, dataSource.resetCount)
+        assertEquals(1, dataSource.sessionChanges)
+        assertEquals(3, errorHandler.sdkErrorMessages.size)
+    }
+
+    @Test
     fun `async provider registers and enables capture on a worker, not the calling thread`() {
         val executor = BlockingScheduledExecutorService(blockingMode = true)
         val args = FakeInstrumentationArgs(
-            application = ApplicationProvider.getApplicationContext(),
+            application = Application(),
             backgroundWorkerSupplier = { BackgroundWorker(executor) },
         )
         var registerCount = 0
@@ -139,7 +175,7 @@ internal class InstrumentationRegistryTest {
 
     @Test
     fun `sync provider enables capture on the calling thread`() {
-        val args = FakeInstrumentationArgs(ApplicationProvider.getApplicationContext())
+        val args = FakeInstrumentationArgs(Application())
         val provider = FakeInstrumentationProvider(
             action = {},
             dataSourceFactory = { dataSource },
@@ -152,7 +188,7 @@ internal class InstrumentationRegistryTest {
 
     @Test
     fun `current states include a value type only for active states whose current value is a system value`() {
-        val args = FakeInstrumentationArgs(ApplicationProvider.getApplicationContext())
+        val args = FakeInstrumentationArgs(Application())
         registry.loadInstrumentations(listOf(TestInstrumentationProvider()), args)
         val dataSource = checkNotNull(registry.findByType(TestStateDataSource::class))
         assertEquals(mapOf(dataSource.stateAttributeKey to "UNKNOWN"), registry.getCurrentStates())
@@ -177,7 +213,7 @@ internal class InstrumentationRegistryTest {
     fun `datasource iteration is threadsafe`() {
         val iterationStarted = CountDownLatch(1)
         val continueIteration = CountDownLatch(1)
-        val newDataSource = FakeDataSource(RuntimeEnvironment.getApplication())
+        val newDataSource = FakeDataSource(Application())
 
         registry.add {
             BlockingTestDataSource(iterationStarted, continueIteration)
@@ -203,7 +239,7 @@ internal class InstrumentationRegistryTest {
 
     @Test
     fun `getCurrentStates includes only active state sources`() {
-        val args = FakeInstrumentationArgs(ApplicationProvider.getApplicationContext())
+        val args = FakeInstrumentationArgs(Application())
         val activeStateSource = TestStateDataSource(args)
         val inactiveStateSource = LazyInitStateDataSource(args)
         registry.add { activeStateSource }
@@ -226,6 +262,22 @@ internal class InstrumentationRegistryTest {
             ),
             registry.getCurrentStates(),
         )
+    }
+
+    private class ThrowingDataSource : DataSource, SessionPartEndListener, SessionPartChangeListener {
+        override val instrumentationName: String = "throwing_data_source"
+
+        override fun onDataCaptureEnabled() {}
+        override fun onDataCaptureDisabled() {}
+        override fun resetDataCaptureLimits() = error("reset")
+        override fun <T> captureTelemetry(
+            inputValidation: () -> Boolean,
+            invalidInputCallback: () -> Unit,
+            action: TelemetryDestination.() -> T?,
+        ): T? = null
+
+        override fun onPreSessionEnd() = error("end")
+        override fun onPostSessionChange() = error("change")
     }
 
     private class BlockingTestDataSource(

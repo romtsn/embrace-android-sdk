@@ -8,22 +8,12 @@ import io.embrace.android.embracesdk.fakes.FakeConfigService
 import io.embrace.android.embracesdk.fakes.TestPlatformSerializer
 import io.embrace.android.embracesdk.fakes.config.FakeBaseUrlConfig
 import io.embrace.android.embracesdk.fakes.config.FakeInstrumentedConfig
-import io.embrace.android.embracesdk.fakes.injection.FakeCoreModule
+import io.embrace.android.embracesdk.fakes.fakeContext
 import io.embrace.android.embracesdk.internal.config.PersistedConfig
-import io.embrace.android.embracesdk.internal.config.behavior.BehaviorThresholdCheck
-import io.embrace.android.embracesdk.internal.config.behavior.OtelBehaviorImpl
-import io.embrace.android.embracesdk.internal.config.behavior.SensitiveKeysBehavior
 import io.embrace.android.embracesdk.internal.config.remote.RemoteConfig
-import io.embrace.android.embracesdk.internal.config.resolved.resolveBreadcrumb
-import io.embrace.android.embracesdk.internal.config.resolved.resolveSensitiveKeys
 import io.embrace.android.embracesdk.internal.delivery.debug.DeliveryTracer
-import io.embrace.android.embracesdk.internal.injection.CoreModule
-import io.embrace.android.embracesdk.internal.injection.DeliveryModule
-import io.embrace.android.embracesdk.internal.injection.EssentialServiceModule
-import io.embrace.android.embracesdk.internal.injection.EssentialServiceModuleImpl
-import io.embrace.android.embracesdk.internal.injection.InitModule
-import io.embrace.android.embracesdk.internal.injection.InitializedModuleGraph
-import io.embrace.android.embracesdk.internal.injection.ModuleGraphSupplier
+import io.embrace.android.embracesdk.internal.injection.ConfigLoadServicesSupplier
+import io.embrace.android.embracesdk.internal.injection.SdkOverrides
 import io.embrace.android.embracesdk.internal.instance.SdkState
 import io.embrace.android.embracesdk.internal.instance.SdkStateHolder
 import io.embrace.android.embracesdk.internal.instance.createSdkStateHolder
@@ -44,31 +34,32 @@ import okhttp3.Protocol
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.assertEquals
 import org.junit.rules.ExternalResource
+import org.robolectric.Shadows.shadowOf
 import java.io.File
 
 /**
  * A [org.junit.Rule] that is responsible for setting up and tearing down the Embrace SDK for use in
  * component/integration testing. Test cases must be run with a test runner that is compatible with Robolectric.
  *
- * The SDK instance exposed is almost like the one used in production other than the 3 modules that have
- * to faked at least in part in order for this to be useful in tests:
+ * The SDK instance exposed is almost like the one used in production other than the 3 areas that have
+ * to be faked at least in part in order for this to be useful in tests:
  *
- * 1) [CoreModule]: Requires [FakeCoreModule] to fake Android system objects like [Application], [Context],
+ * 1) Core: uses [fakeContext] to fake Android system objects like [Application], [Context],
  * and resources that are normally not available in a JUnit test environment. Also, a [FakeClock] is used
  * so we can control time to control timing and execution manually rather than waiting for normal
- * time to pass.
+ * time to pass. `SharedPreferences` are held in memory by [InMemorySharedPreferences] rather than written to disk.
  *
- * 2) [EssentialServiceModule]: Requires an instance of [EssentialServiceModuleImpl] that uses a [FakeConfigService]
- * to allow the appropriate feature flags be set to suit the test case. Everything else in the
- * module is otherwise real unless provided by [FakeCoreModule]
+ * 2) Essential services: these use a [FakeConfigService] to allow the appropriate feature flags be set to suit
+ * the test case. The lifecycle tracker and network connectivity service are replaced via [SdkOverrides], and
+ * everything else is otherwise real
  *
- * 3) [DeliveryModule]: Requires [FakeDeliveryModule] so that a [FakeDeliveryService] can be used in order
- * for payloads normally sent to the server to be inspected to verify the correctness of the data produced.
- * Everything else in [FakeDeliveryModule] is otherwise real unless provided by [FakeCoreModule]
+ * 3) Delivery: payloads are sent to a local [MockWebServer] and recorded by a [DeliveryTracer], so that
+ * payloads normally sent to the server can be inspected to verify the correctness of the data produced.
+ * The delivery services are otherwise real unless replaced via [SdkOverrides].
  *
- * The modules instantiated by default reference each other, e.g. the same instance of [FakeCoreModule] is used
- * in all the other modules. This means modifications of one object within a module will be reflected in the
- * other modules, e.g. [InitModule.clock]. This allows the system to behave as one unit.
+ * The services instantiated by default reference each other, e.g. the same context is used
+ * by all the other services. This means modifications of one object will be reflected in the
+ * other services, e.g. the [FakeClock]. This allows the system to behave as one unit.
  *
  * While it is possible to override the default behavior of the [Embrace] instance in the Rule by passing in
  * a custom supplier to create an instance of [EmbraceSetupInterface] with custom overridden constructor parameters, be
@@ -80,7 +71,7 @@ import java.io.File
  * without the pain of dealing with a singleton in parallelized unit tests.
  *
  * It is also possible to access internal modules & dependencies that are not exposed via the public API.
- * For example, it is possible to access the [FakeDeliveryModule] to get event/session payloads the SDK sent.
+ * For example, it is possible to access [services] to inspect the delivery services the SDK used.
  *
  * In general, it is recommended to use functions declared in PayloadRetrievalExtensions.kt that retrieve
  * this useful information for you. If it's not possible to get information from the SDK and you
@@ -122,15 +113,14 @@ internal class SdkIntegrationTestRule(
     private lateinit var logExporter: FilteredLogExporter
     private lateinit var sdkStateHolder: SdkStateHolder
     private lateinit var baseUrl: String
+    private lateinit var server: MockWebServer
 
-    private lateinit var moduleGraphSupplier: ModuleGraphSupplier
-    private var createdModuleGraph: InitializedModuleGraph? = null
-
+    private lateinit var configLoadServicesSupplier: ConfigLoadServicesSupplier
     /**
-     * The module graph created when the SDK under test started.
+     * The SDK services that tests inspect, captured as the SDK under test constructs them.
      */
-    val moduleGraph: InitializedModuleGraph
-        get() = checkNotNull(createdModuleGraph) { "SDK not initialized" }
+    val services: CapturedServices
+        get() = setup.services
 
     /**
      * Runs a test case. The test case should be separated into 3 parts: setup, action, and
@@ -143,7 +133,9 @@ internal class SdkIntegrationTestRule(
         persistedRemoteConfig: RemoteConfig = RemoteConfig(),
         serverResponseConfig: RemoteConfig = persistedRemoteConfig,
         serverResponseConfigJson: String? = null,
+        serverResponseConfigEtag: String = "server_etag_value",
         expectSdkToStart: Boolean = startSdk,
+        expectedSdkState: SdkState = if (expectSdkToStart) SdkState.STARTED else SdkState.DISABLED,
         setupAction: EmbraceSetupInterface.() -> Unit = {},
         preSdkStartAction: EmbracePreSdkStartInterface.() -> Unit = {},
         testCaseAction: EmbraceActionInterface.() -> Unit,
@@ -155,8 +147,8 @@ internal class SdkIntegrationTestRule(
         val serverConfig = otelSdkMode.applyTo(serverResponseConfig)
         setup = embraceSetupInterfaceSupplier()
         val deliveryTracer = DeliveryTracer()
-        val apiServer = FakeApiServer(serverConfig, deliveryTracer, serverResponseConfigJson)
-        val server: MockWebServer = MockWebServer().apply {
+        val apiServer = FakeApiServer(serverConfig, deliveryTracer, serverResponseConfigJson, serverResponseConfigEtag)
+        server = MockWebServer().apply {
             protocols = listOf(Protocol.HTTP_2, Protocol.HTTP_1_1)
             dispatcher = apiServer
             start()
@@ -164,21 +156,20 @@ internal class SdkIntegrationTestRule(
         baseUrl = server.url("api").toString()
 
         preSdkStart = EmbracePreSdkStartInterface(setup) { sdkStateHolder.api }
-        createdModuleGraph = null
-        moduleGraphSupplier = setup.createModuleGraphSupplier(
+        configLoadServicesSupplier = setup.createConfigLoadServicesSupplier(
             localConfig.copy(
                 baseUrls = FakeBaseUrlConfig(configImpl = baseUrl, dataImpl = baseUrl)
             ),
-            deliveryTracer
         )
         action = EmbraceActionInterface(
             setup,
-            { moduleGraph.instrumentationModule.instrumentationRegistry },
+            { services.instrumentationRegistry },
+            { services.eventBus },
             { sdkStateHolder.api },
             { sdkStateHolder.state },
         )
         payloadAssertion = EmbracePayloadAssertionInterface(
-            setup.initModule,
+            setup.initServices.jsonSerializer,
             deliveryTracer,
             apiServer,
         ) { sdkStateHolder.state }
@@ -188,7 +179,7 @@ internal class SdkIntegrationTestRule(
 
         setupAction(setup)
         with(setup) {
-            sdkStateHolder = createStateHolder()
+            sdkStateHolder = createStateHolder(deliveryTracer)
             preSdkStartAction(preSdkStart)
             //TODO: Filtered span and log exporters should be migrated to Kotlin.
             sdkStateHolder.api.addSpanExporter(spanExporter.toOtelKotlinSpanExporter())
@@ -196,12 +187,6 @@ internal class SdkIntegrationTestRule(
 
             // persist config here before the SDK starts up: the SDK reads it during start()
             persistConfig(persistedConfig)
-            setup.openTelemetryModule.applyConfiguration(
-                sensitiveKeysBehavior = SensitiveKeysBehavior(resolveSensitiveKeys(localConfig)),
-                bypassValidation = false,
-                otelBehavior = OtelBehaviorImpl(BehaviorThresholdCheck { "123456" }, localConfig, persistedConfig),
-                breadcrumbConfig = resolveBreadcrumb(localConfig, persistedConfig)
-            )
 
             if (startSdk) {
                 sdkStateHolder.api.start(ApplicationProvider.getApplicationContext())
@@ -212,17 +197,18 @@ internal class SdkIntegrationTestRule(
                 )
                 assertEquals(
                     "SDK state holder did not reach the expected state.",
-                    if (expectSdkToStart) SdkState.STARTED else SdkState.FAILED,
+                    expectedSdkState,
                     sdkStateHolder.state
                 )
                 if (sdkStateHolder.api.isStarted) {
                     assertEquals(
                         "SDK did not select the $otelSdkMode opentelemetry-kotlin implementation.",
                         otelSdkMode.useKotlinSdk,
-                        setup.openTelemetryModule.otelSdkWrapper.useKotlinSdk,
+                        services.otelSdkWrapper.useKotlinSdk,
                     )
+                    // a start that fails releases the worker threads, so there is nothing to await
+                    awaitAsyncInstrumentation()
                 }
-                awaitAsyncInstrumentation()
             }
         }
         testCaseAction(action)
@@ -234,7 +220,7 @@ internal class SdkIntegrationTestRule(
     }
 
     private fun drainExternalExports() {
-        val otelSdkConfig = setup.openTelemetryModule.otelSdkConfig
+        val otelSdkConfig = services.otelSdkConfigOrNull ?: return
         runBlocking {
             otelSdkConfig.spanProcessor.forceFlush()
             otelSdkConfig.logRecordProcessor.forceFlush()
@@ -249,8 +235,8 @@ internal class SdkIntegrationTestRule(
         val storageDir = File(ctx.filesDir, PersistedConfig.STORAGE_DIR_NAME).apply {
             mkdirs()
         }
-        File(storageDir, "etag").writeText("persisted_etag")
-        val responseFile = File(storageDir, "most_recent_response")
+        File(storageDir, PersistedConfig.ETAG_FILE_NAME).writeText("persisted_etag")
+        val responseFile = File(storageDir, PersistedConfig.CONFIG_RESPONSE_FILE_NAME)
 
         responseFile.outputStream().buffered().use { stream ->
             TestPlatformSerializer().toJson(persistedRemoteConfig, RemoteConfig.serializer(), stream)
@@ -263,6 +249,18 @@ internal class SdkIntegrationTestRule(
     override fun before() {
         Thread.setDefaultUncaughtExceptionHandler(null)
         EmbTrace.durationTracker.reset()
+        useLightweightActivityTheme()
+    }
+
+    /**
+     * Activities get the default Material theme otherwise, so every Activity.onCreate inflates a full window decor
+     * including an action bar, which is about a quarter of the CPU time of the suite. A framework theme
+     * without an action bar or activity transitions makes each simulated activity about 4x cheaper.
+     */
+    private fun useLightweightActivityTheme() {
+        val ctx = ApplicationProvider.getApplicationContext<Context>()
+        val packageInfo = shadowOf(ctx.packageManager).getInternalMutablePackageInfo(ctx.packageName)
+        packageInfo.applicationInfo?.theme = android.R.style.Theme_NoTitleBar
     }
 
     /**
@@ -272,13 +270,17 @@ internal class SdkIntegrationTestRule(
         if (::sdkStateHolder.isInitialized) {
             sdkStateHolder.close()
         }
+        if (::server.isInitialized) {
+            server.shutdown()
+        }
     }
 
-    private fun createStateHolder(): SdkStateHolder {
+    private fun createStateHolder(deliveryTracer: DeliveryTracer): SdkStateHolder {
         return createSdkStateHolder(
-            bootstrapServices = setup.bootstrapServices,
-            moduleGraphSupplier = moduleGraphSupplier,
-            onModuleGraphCreated = { createdModuleGraph = it },
+            preStartServices = setup.preStartServices,
+            configLoadServicesSupplier = configLoadServicesSupplier,
+            sdkInitResourceUsageTrackerSupplier = setup::fakeSdkInitResourceUsageTracker,
+            overrides = setup.createSdkOverrides(deliveryTracer),
         )
     }
 

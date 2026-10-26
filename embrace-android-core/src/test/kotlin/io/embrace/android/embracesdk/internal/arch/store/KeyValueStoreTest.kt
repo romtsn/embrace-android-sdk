@@ -1,12 +1,6 @@
-@file:Suppress("DEPRECATION")
-
 package io.embrace.android.embracesdk.internal.arch.store
 
-import android.content.Context
-import android.content.SharedPreferences
-import android.preference.PreferenceManager
-import androidx.test.core.app.ApplicationProvider
-import androidx.test.ext.junit.runners.AndroidJUnit4
+import io.embrace.android.embracesdk.fakes.FakeSharedPreferences
 import io.embrace.android.embracesdk.fakes.TestPlatformSerializer
 import io.embrace.android.embracesdk.internal.prefs.SharedPrefsStore
 import io.embrace.android.embracesdk.internal.store.KeyValueStore
@@ -17,18 +11,14 @@ import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
-import org.junit.runner.RunWith
 
-@RunWith(AndroidJUnit4::class)
 internal class KeyValueStoreTest {
 
-    private val context = ApplicationProvider.getApplicationContext<Context>()
     private lateinit var store: KeyValueStore
 
     @Before
     fun setUp() {
-        val prefs: SharedPreferences = PreferenceManager.getDefaultSharedPreferences(context)
-        store = SharedPrefsStore(prefs, TestPlatformSerializer())
+        store = SharedPrefsStore(FakeSharedPreferences(), TestPlatformSerializer())
     }
 
     @Test
@@ -40,6 +30,20 @@ internal class KeyValueStoreTest {
         assertFalse(checkNotNull(store.getBoolean(key, false)))
         assertNull(store.getStringSet(key))
         assertNull(store.getStringMap(key))
+    }
+
+    @Test
+    fun `a value of another type or malformed JSON reads as absent`() {
+        store.editAndCommit {
+            putInt("int", 1)
+            putString("string", "{not json")
+        }
+        assertNull(store.getString("int"))
+        assertNull(store.getStringSet("int"))
+        assertNull(store.getStringMap("string"))
+        assertNull(store.getInt("string"))
+        assertNull(store.getLong("string"))
+        assertTrue(store.getBoolean("string", true))
     }
 
     @Test

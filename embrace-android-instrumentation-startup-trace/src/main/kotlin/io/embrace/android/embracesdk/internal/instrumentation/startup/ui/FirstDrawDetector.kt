@@ -9,8 +9,11 @@ import android.view.ViewTreeObserver
 import android.view.Window
 import androidx.annotation.RequiresApi
 import io.embrace.android.embracesdk.internal.instrumentation.startup.activity.traceInstanceId
-import io.embrace.android.embracesdk.internal.logging.InternalErrorType
-import io.embrace.android.embracesdk.internal.logging.InternalLogger
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
+import io.embrace.android.embracesdk.internal.logging.guardSdkCode
+import java.util.Collections
+import java.util.WeakHashMap
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -22,7 +25,7 @@ import java.util.concurrent.ConcurrentHashMap
  */
 @RequiresApi(Build.VERSION_CODES.Q)
 internal class FirstDrawDetector(
-    private val logger: InternalLogger,
+    private val errorHandler: ErrorHandler,
 ) : DrawEventEmitter {
 
     private val loadingActivities: MutableMap<Int, Runnable> = ConcurrentHashMap()
@@ -30,12 +33,20 @@ internal class FirstDrawDetector(
     // Registrations waiting for their first draw, keyed by instance ID. The token lets a draw listener tell whether
     // its registration is still current, so unregistering or reregistering before the first draw stops it.
     private val pendingDraws: ConcurrentHashMap<Int, Any> = ConcurrentHashMap()
+    private val windowCallbacks: MutableSet<PyWindowDelegateCallback> = Collections.newSetFromMap(WeakHashMap())
+    private val drawListeners: MutableSet<PyNextDrawListener> = Collections.newSetFromMap(WeakHashMap())
+
+    @Volatile
+    private var closed = false
 
     override fun registerFirstDrawCallback(
         activity: Activity,
         drawBeginCallback: () -> Unit,
         drawCompleteCallback: () -> Unit,
     ) {
+        if (closed) {
+            return
+        }
         val instanceId = traceInstanceId(activity)
         if (!trackingLoad(instanceId)) {
             val window = activity.window
@@ -45,18 +56,23 @@ internal class FirstDrawDetector(
                 window.onDecorViewReady {
                     val decorView = window.decorView
                     decorView.onNextDraw {
-                        if (pendingDraws.remove(instanceId, registrationToken) && !trackingLoad(instanceId)) {
+                        // closed is checked as close() may have run before the registration token was stored
+                        if (!closed && pendingDraws.remove(instanceId, registrationToken) && !trackingLoad(instanceId)) {
                             drawBeginCallback()
                             // the same instance must be registered and stored so that it can be unregistered later
-                            val frameCommitCallback = Runnable { drawCompleteCallback() }
+                            val frameCommitCallback = Runnable {
+                                if (!closed) {
+                                    errorHandler.guardSdkCode(SdkErrorType.UiCallbackFail, drawCompleteCallback)
+                                }
+                            }
                             loadingActivities[instanceId] = frameCommitCallback
                             decorView.viewTreeObserver.registerFrameCommitCallback(frameCommitCallback)
                         }
                     }
                 }
             } else if (!loadingActivities.containsKey(instanceId)) {
-                logger.trackInternalError(
-                    type = InternalErrorType.UiCallbackFail,
+                errorHandler.trackSdkError(
+                    type = SdkErrorType.UiCallbackFail,
                     throwable = IllegalStateException(
                         "Fail to attach frame rendering callback because the callback on Window was null",
                     ),
@@ -74,31 +90,46 @@ internal class FirstDrawDetector(
         val instanceId = traceInstanceId(activity)
         pendingDraws.remove(instanceId)
         loadingActivities[instanceId]?.let { firstDrawCallback ->
-            runCatching {
+            errorHandler.guardSdkCode(SdkErrorType.UiCallbackFail) {
                 activity.window.decorView.viewTreeObserver.unregisterFrameCommitCallback(firstDrawCallback)
-            }.exceptionOrNull()?.let { exception ->
-                logger.trackInternalError(
-                    type = InternalErrorType.UiCallbackFail,
-                    throwable = IllegalStateException("Failed to unregister first draw callback", exception),
-                )
             }
             loadingActivities.remove(instanceId)
+        }
+    }
+
+    override fun close() {
+        closed = true
+        pendingDraws.clear()
+        loadingActivities.clear()
+        synchronized(windowCallbacks) {
+            windowCallbacks.forEach(PyWindowDelegateCallback::close)
+            windowCallbacks.clear()
+        }
+        synchronized(drawListeners) {
+            drawListeners.forEach(PyNextDrawListener::close)
+            drawListeners.clear()
         }
     }
 
     private fun trackingLoad(instanceId: Int): Boolean = loadingActivities.containsKey(instanceId)
 
     private fun View.onNextDraw(onDrawCallback: () -> Unit) {
-        viewTreeObserver.addOnDrawListener(
-            PyNextDrawListener(this, onDrawCallback),
-        )
+        synchronized(drawListeners) {
+            if (closed) {
+                return
+            }
+            val listener =
+                PyNextDrawListener(this) { errorHandler.guardSdkCode(SdkErrorType.UiCallbackFail, onDrawCallback) }
+            drawListeners += listener
+            viewTreeObserver.addOnDrawListener(listener)
+        }
     }
 
     private fun Window.onDecorViewReady(onDecorViewReady: () -> Unit) {
         if (callback != null) {
             if (peekDecorView() == null) {
                 onContentChanged {
-                    onDecorViewReady()
+                    errorHandler.guardSdkCode(SdkErrorType.UiCallbackFail, onDecorViewReady)
                     return@onContentChanged false
                 }
             } else {
@@ -108,28 +139,43 @@ internal class FirstDrawDetector(
     }
 
     private fun Window.onContentChanged(onDrawCallbackInvocation: () -> Boolean) {
-        val currentCallback = callback
-        val callback = if (currentCallback is PyWindowDelegateCallback) {
-            currentCallback
-        } else {
-            val newCallback = PyWindowDelegateCallback(currentCallback)
-            callback = newCallback
-            newCallback
+        synchronized(windowCallbacks) {
+            if (closed) {
+                return
+            }
+            val currentCallback = callback
+            val callback = if (currentCallback is PyWindowDelegateCallback && currentCallback in windowCallbacks) {
+                currentCallback
+            } else {
+                val newCallback = PyWindowDelegateCallback(currentCallback)
+                windowCallbacks += newCallback
+                callback = newCallback
+                newCallback
+            }
+            callback.addOnContentChangedCallback(onDrawCallbackInvocation)
         }
-        callback.onContentChangedCallbacks += onDrawCallbackInvocation
     }
 
     private class PyNextDrawListener(
         val view: View,
-        val onDrawCallback: () -> Unit,
-    ) : ViewTreeObserver.OnDrawListener {
+        onDrawCallback: () -> Unit,
+    ) : ViewTreeObserver.OnDrawListener, AutoCloseable {
         val handler = Handler(Looper.getMainLooper())
         var invoked = false
+
+        // nulled on close so that a listener still waiting for a draw does not retain the SDK
+        @Volatile
+        private var onDrawCallback: (() -> Unit)? = onDrawCallback
+
+        override fun close() {
+            onDrawCallback = null
+        }
 
         override fun onDraw() {
             if (!invoked) {
                 invoked = true
-                onDrawCallback()
+                onDrawCallback?.invoke()
+                onDrawCallback = null
                 handler.post {
                     if (view.viewTreeObserver.isAlive) {
                         view.viewTreeObserver.removeOnDrawListener(this)
@@ -141,12 +187,22 @@ internal class FirstDrawDetector(
 
     private class PyWindowDelegateCallback(
         private val delegate: Window.Callback,
-    ) : Window.Callback by delegate {
+    ) : Window.Callback by delegate, AutoCloseable {
 
-        val onContentChangedCallbacks = mutableListOf<() -> Boolean>()
+        // only accessed on the main thread
+        @Volatile
+        private var onContentChangedCallbacks: MutableList<() -> Boolean>? = mutableListOf()
+
+        fun addOnContentChangedCallback(callback: () -> Boolean) {
+            onContentChangedCallbacks?.add(callback)
+        }
+
+        override fun close() {
+            onContentChangedCallbacks = null
+        }
 
         override fun onContentChanged() {
-            onContentChangedCallbacks.removeAll { callback ->
+            onContentChangedCallbacks?.removeAll { callback ->
                 !callback()
             }
             delegate.onContentChanged()

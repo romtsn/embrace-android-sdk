@@ -1,7 +1,7 @@
 package io.embrace.android.embracesdk.internal.session.persistence
 
 import io.embrace.android.embracesdk.fakes.FakeClock
-import io.embrace.android.embracesdk.fakes.FakeInternalLogger
+import io.embrace.android.embracesdk.fakes.FakeErrorHandler
 import io.embrace.android.embracesdk.internal.payload.Span
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -54,7 +54,7 @@ internal class SessionReconstructionServiceDedupeTest {
     val tempFolder: TemporaryFolder = TemporaryFolder()
 
     private lateinit var sessionsDir: File
-    private lateinit var logger: FakeInternalLogger
+    private lateinit var errorHandler: FakeErrorHandler
     private lateinit var metadataWriter: SessionMetadataWriter
     private lateinit var snapshotsWriter: SpanSnapshotsWriter
     private lateinit var service: SessionReconstructionService
@@ -68,7 +68,7 @@ internal class SessionReconstructionServiceDedupeTest {
     @Before
     fun setUp() {
         sessionsDir = tempFolder.newFolder("embrace_sessions")
-        logger = FakeInternalLogger(throwOnInternalError = false)
+        errorHandler = FakeErrorHandler(throwOnSdkError = false)
         sessionSpan = fullyPopulatedSpan
         activePart = partDirectory
         metadataWriter = SessionMetadataWriter(
@@ -78,10 +78,10 @@ internal class SessionReconstructionServiceDedupeTest {
             envelopeVersion = ENVELOPE_VERSION,
             envelopeType = ENVELOPE_TYPE,
             sharedLibSymbolMappingSource = { null },
-            logger = logger,
+            errorHandler = errorHandler,
         )
-        snapshotsWriter = SpanSnapshotsWriter(target(), logger)
-        service = SessionReconstructionService(lazy { sessionsDir }, logger)
+        snapshotsWriter = SpanSnapshotsWriter(target(), errorHandler)
+        service = SessionReconstructionService(lazy { sessionsDir }, errorHandler)
         createPartDir(partDirectory)
     }
 
@@ -92,7 +92,7 @@ internal class SessionReconstructionServiceDedupeTest {
         val payload = checkNotNull(service.reconstruct(partDirectory)?.envelope?.data)
         assertEquals(listOf(earlySpan, fullyPopulatedSpan), payload.spans)
         assertEquals(emptyList<Span>(), payload.spanSnapshots)
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -102,7 +102,7 @@ internal class SessionReconstructionServiceDedupeTest {
         val payload = checkNotNull(service.reconstruct(partDirectory)?.envelope?.data)
         assertEquals(listOf(earlySpan, fullyPopulatedSpan), payload.spans)
         assertEquals(emptyList<Span>(), payload.spanSnapshots)
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -118,7 +118,7 @@ internal class SessionReconstructionServiceDedupeTest {
         write(snapshots = listOf(earlySpan, lateSpan))
 
         assertEquals(listOf(lateSpan), service.reconstruct(partDirectory)?.envelope?.data?.spanSnapshots)
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -130,7 +130,7 @@ internal class SessionReconstructionServiceDedupeTest {
         val payload = checkNotNull(service.reconstruct(partDirectory)?.envelope?.data)
         assertEquals(listOf(earlySpan, otherSpan, fullyPopulatedSpan), payload.spans)
         assertEquals(listOf(otherSnapshot), payload.spanSnapshots)
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -147,7 +147,7 @@ internal class SessionReconstructionServiceDedupeTest {
     }
 
     @Test
-    fun `one internal error is logged however many duplicates are removed`() {
+    fun `one SDK error is logged however many duplicates are removed`() {
         write(
             spans = listOf(earlySpanProto, earlySpanProto, otherSpanProto, otherSpanProto),
             snapshots = listOf(inFlightSpan, otherSnapshot, otherSnapshot),
@@ -165,17 +165,17 @@ internal class SessionReconstructionServiceDedupeTest {
 
         val payload = checkNotNull(service.reconstruct(partDirectory)?.envelope?.data)
         assertEquals(listOf(anonymousSpan, anonymousSpan, fullyPopulatedSpan), payload.spans)
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
-    fun `a payload with no duplicates logs no internal error`() {
+    fun `a payload with no duplicates logs no SDK error`() {
         write(spans = listOf(earlySpanProto, otherSpanProto), snapshots = listOf(otherSnapshot))
 
         val payload = checkNotNull(service.reconstruct(partDirectory)?.envelope?.data)
         assertEquals(listOf(earlySpan, otherSpan, fullyPopulatedSpan), payload.spans)
         assertEquals(listOf(otherSnapshot), payload.spanSnapshots)
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     private fun target(): SessionPartWriteTarget =
@@ -191,12 +191,12 @@ internal class SessionReconstructionServiceDedupeTest {
         assertTrue(snapshotsWriter.write(snapshots))
     }
 
-    private fun assertNoInternalErrors() {
-        assertEquals(emptyList<FakeInternalLogger.LogMessage>(), logger.internalErrorMessages)
+    private fun assertNoSdkErrors() {
+        assertEquals(emptyList<FakeErrorHandler.LogMessage>(), errorHandler.sdkErrorMessages)
     }
 
     private fun assertDuplicatesTracked() {
-        assertEquals(1, logger.internalErrorMessages.size)
-        assertEquals("DuplicateSpanIds", logger.internalErrorMessages.single().msg)
+        assertEquals(1, errorHandler.sdkErrorMessages.size)
+        assertEquals("DuplicateSpanIds", errorHandler.sdkErrorMessages.single().msg)
     }
 }

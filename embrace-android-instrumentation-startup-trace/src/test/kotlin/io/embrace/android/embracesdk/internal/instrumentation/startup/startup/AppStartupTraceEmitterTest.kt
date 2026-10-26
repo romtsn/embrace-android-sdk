@@ -4,10 +4,11 @@ import android.os.Build.VERSION_CODES
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import io.embrace.android.embracesdk.fakes.FakeClock
 import io.embrace.android.embracesdk.fakes.FakeClock.Companion.DEFAULT_FAKE_CURRENT_TIME
-import io.embrace.android.embracesdk.fakes.FakeInternalLogger
+import io.embrace.android.embracesdk.fakes.FakeErrorHandler
 import io.embrace.android.embracesdk.fakes.FakeProcessInfo
 import io.embrace.android.embracesdk.fakes.FakeSpanToken
 import io.embrace.android.embracesdk.fakes.FakeTelemetryDestination
+import io.embrace.android.embracesdk.internal.arch.datasource.SpanEventImpl
 import io.embrace.android.embracesdk.internal.arch.schema.ErrorCodeAttribute
 import io.embrace.android.embracesdk.internal.arch.schema.PrivateSpan
 import io.embrace.android.embracesdk.internal.arch.startup.MAX_COLD_STARTUP_INIT_GAP_MS
@@ -15,6 +16,7 @@ import io.embrace.android.embracesdk.internal.arch.startup.StartupClassifier
 import io.embrace.android.embracesdk.internal.arch.startup.StartupClassifierImpl
 import io.embrace.android.embracesdk.internal.arch.startup.StartupType
 import io.embrace.android.embracesdk.internal.arch.state.ProcessState
+import io.embrace.android.embracesdk.internal.clock.millisToNanos
 import io.embrace.android.embracesdk.internal.instrumentation.startup.AppStartupTraceEmitter
 import io.embrace.android.embracesdk.internal.instrumentation.startup.AppStartupTraceEmitter.Companion.ACTIVITY_FIRST_DRAW_SPAN
 import io.embrace.android.embracesdk.internal.instrumentation.startup.AppStartupTraceEmitter.Companion.ACTIVITY_INIT_DELAY_SPAN
@@ -67,16 +69,16 @@ internal class AppStartupTraceEmitterTest {
 
     private lateinit var clock: FakeClock
     private lateinit var destination: FakeTelemetryDestination
-    private lateinit var logger: FakeInternalLogger
+    private lateinit var errorHandler: FakeErrorHandler
     private lateinit var versionChecker: VersionChecker
 
     @Before
     fun setUp() {
         clock = FakeClock(processInitTime)
         destination = FakeTelemetryDestination()
-        startupService = StartupServiceImpl(destination) { APP_VERSION_STARTUP_COUNTER }
+        errorHandler = FakeErrorHandler(false)
+        startupService = StartupServiceImpl(destination, errorHandler) { APP_VERSION_STARTUP_COUNTER }
         clock.tick(100L)
-        logger = FakeInternalLogger(false)
     }
 
     /**
@@ -179,6 +181,23 @@ internal class AppStartupTraceEmitterTest {
             firstFrameRendered(STARTUP_ACTIVITY_NAME)
         }
         assertEquals(1, dataCollectionCompletedCallbackInvokedCount)
+    }
+
+    @Test
+    fun `tracked interval is unaffected by the caller mutating its collections afterwards`() {
+        simulateApi(VERSION_CODES.TIRAMISU)
+        val attributes = mutableMapOf("key" to "value")
+        val events = mutableListOf(SpanEventImpl("event", clock.now().millisToNanos(), emptyMap()))
+        createTraceEmitter().run {
+            addTrackedInterval("app-span", clock.now(), clock.tick(15L), attributes, events)
+            attributes.clear()
+            events.clear()
+            simulateAppStartup(verifyTrace = false)
+        }
+        with(checkNotNull(destination.completedSpans().single { it.name == "app-span" })) {
+            assertEquals("value", this.attributes["key"])
+            assertEquals("event", this.events.single().name)
+        }
     }
 
     @Test
@@ -647,7 +666,7 @@ internal class AppStartupTraceEmitterTest {
             startupServiceProvider = { startupService },
             destination = destination,
             versionChecker = versionChecker,
-            logger = logger,
+            errorHandler = errorHandler,
             startupClassifier = startupClassifier,
             manualEnd = manualEnd,
             processInfo = FakeProcessInfo(
@@ -779,7 +798,7 @@ internal class AppStartupTraceEmitterTest {
             }
         }
 
-        assertEquals(0, logger.internalErrorMessages.size)
+        assertEquals(0, errorHandler.sdkErrorMessages.size)
     }
 
     private fun AppStartupTraceEmitter.initApp(hasAppInitEvents: Boolean, isColdStart: Boolean): AppInitTimestamps {

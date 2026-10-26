@@ -1,7 +1,8 @@
 package io.embrace.android.embracesdk.internal.instrumentation.crash.jvm
 
-import io.embrace.android.embracesdk.internal.logging.InternalErrorType
-import io.embrace.android.embracesdk.internal.logging.InternalLogger
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
+import io.embrace.android.embracesdk.internal.logging.guardSdkCode
 
 /**
  * Intercepts uncaught exceptions from the JVM and forwards them to the Embrace API. Once handled,
@@ -18,17 +19,18 @@ internal class EmbraceUncaughtExceptionHandler(
      * The crash service which will submit the exception to the API as a crash
      */
     dataSource: JvmCrashDataSource,
-    private val logger: InternalLogger,
+    private val errorHandler: ErrorHandler,
 ) : Thread.UncaughtExceptionHandler {
 
     @Volatile
     private var dataSource: JvmCrashDataSource? = dataSource
 
     override fun uncaughtException(thread: Thread, exception: Throwable) {
+        // Run the default crash handler even if the guard method itself throws
         try {
-            dataSource?.logUnhandledJvmThrowable(exception)
-        } catch (ex: Exception) {
-            logger.trackInternalError(InternalErrorType.UncaughtExceptionHandler, ex)
+            errorHandler.guardSdkCode(SdkErrorType.UncaughtExceptionHandler) {
+                dataSource?.logUnhandledJvmThrowable(exception)
+            }
         } finally {
             defaultHandler?.uncaughtException(thread, exception)
         }

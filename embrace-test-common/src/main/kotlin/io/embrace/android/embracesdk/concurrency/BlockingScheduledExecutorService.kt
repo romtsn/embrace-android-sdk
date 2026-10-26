@@ -225,11 +225,19 @@ class BlockingScheduledExecutorService(
         }
     }
 
+    /**
+     * Periodic tasks are cancelled rather than run, matching [java.util.concurrent.ScheduledThreadPoolExecutor]'s default
+     * shutdown policy. Running them would re-queue them and drain forever.
+     */
     private fun drainToDelegate() {
         do {
             val task = scheduledTasks.poll()
             if (task != null) {
-                submit(task)
+                if (task.isPeriodic) {
+                    task.cancel(false)
+                } else {
+                    submit(task)
+                }
             }
         } while (task != null)
     }
@@ -269,7 +277,10 @@ class BlockingScheduledExecutorService(
             if (!isPeriodic) {
                 super.run()
             } else {
-                runAndReset()
+                // as with a real executor, a run that throws (or a cancelled task) is not rescheduled
+                if (!runAndReset()) {
+                    return
+                }
                 if (runFromLastExecution) {
                     executionTimeMs = fakeClock.now() + periodMs
                 } else {

@@ -13,6 +13,9 @@ import io.embrace.android.embracesdk.internal.arch.navigation.NavigationTracking
 import io.embrace.android.embracesdk.internal.arch.navigation.getId
 import io.embrace.android.embracesdk.internal.arch.state.ProcessStateListener
 import io.embrace.android.embracesdk.internal.clock.Clock
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
+import io.embrace.android.embracesdk.internal.logging.guardSdkCode
 import io.embrace.android.embracesdk.internal.utils.BuildVersionChecker
 import io.embrace.android.embracesdk.internal.utils.VersionChecker
 import io.embrace.android.embracesdk.internal.utils.event.EventBus
@@ -27,6 +30,7 @@ internal class ActivityNavigationTracker(
     private val clock: Clock,
     private val eventBus: EventBus,
     private val navigationTrackingService: NavigationTrackingService,
+    private val errorHandler: ErrorHandler,
     versionChecker: VersionChecker = BuildVersionChecker,
 ) : Application.ActivityLifecycleCallbacks, ProcessStateListener {
 
@@ -79,17 +83,23 @@ internal class ActivityNavigationTracker(
     override fun onForeground() {}
 
     private fun handleActivityStarted(activity: Activity) {
-        eventBus.emit(NavigationSignal.KEY, ActivityStarted(activity.getId(), clock.now()))
+        errorHandler.guardSdkCode(SdkErrorType.UiCallbackFail) {
+            eventBus.emit(NavigationSignal.KEY, ActivityStarted(activity.getId(), clock.now()))
+        }
     }
 
     private fun handleActivityResumed(activity: Activity) {
-        eventBus.emit(NavigationSignal.KEY, ActivityResumed(activity.getId(), activity.localClassName, clock.now()))
+        errorHandler.guardSdkCode(SdkErrorType.UiCallbackFail) {
+            eventBus.emit(NavigationSignal.KEY, ActivityResumed(activity.getId(), activity.localClassName, clock.now()))
 
-        // Add screen source tracking after the resume signal is emitted to mimic how the rememberNavController Composable will do it.
-        navigationTrackingService.trackNavigation(activity)
+            // Add screen source tracking after the resume signal is emitted to mimic how the rememberNavController Composable will do it.
+            navigationTrackingService.trackNavigation(activity)
+        }
     }
 
     private fun handleActivityPaused(activity: Activity) {
-        eventBus.emit(NavigationSignal.KEY, ActivityPaused(activity.getId(), clock.now()))
+        errorHandler.guardSdkCode(SdkErrorType.UiCallbackFail) {
+            eventBus.emit(NavigationSignal.KEY, ActivityPaused(activity.getId(), clock.now()))
+        }
     }
 }

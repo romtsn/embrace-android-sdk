@@ -11,6 +11,7 @@ import io.embrace.android.embracesdk.internal.arch.ui.TapSignal
 import io.embrace.android.embracesdk.internal.instrumentation.compose.tap.fakes.FakeScreenViewFactory
 import io.embrace.android.embracesdk.internal.instrumentation.compose.tap.fakes.PositionedFrameLayout
 import io.embrace.android.embracesdk.internal.instrumentation.compose.tap.fakes.PositionedView
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -31,7 +32,7 @@ internal class ComposeClickedTargetIteratorTest {
         context = application
         args = FakeInstrumentationArgs(application)
         args.eventBus.addHandler(TapSignal.KEY) { taps.add(it) }
-        iterator = ComposeClickedTargetIterator(args.logger, ComposeTapDataSource(args))
+        iterator = ComposeClickedTargetIterator(args.errorHandler, ComposeTapDataSource(args))
     }
 
     @Test
@@ -40,7 +41,7 @@ internal class ComposeClickedTargetIteratorTest {
 
         iterator.findTarget(decor, x = 540f, y = 1200f)
 
-        assertTrue(args.logger.errorMessages.isEmpty())
+        assertTrue(args.errorHandler.errorMessages.isEmpty())
         assertTrue(taps.isEmpty())
     }
 
@@ -50,7 +51,7 @@ internal class ComposeClickedTargetIteratorTest {
 
         iterator.findTarget(decor, x = 2000f, y = 3000f)
 
-        assertTrue(args.logger.errorMessages.isEmpty())
+        assertTrue(args.errorHandler.errorMessages.isEmpty())
         assertTrue(taps.isEmpty())
     }
 
@@ -66,7 +67,7 @@ internal class ComposeClickedTargetIteratorTest {
 
         // child was queued and popped — so its children's location was queried during the bounds check
         assertEquals(1, inner.locationCheckCount)
-        assertTrue(args.logger.errorMessages.isEmpty())
+        assertTrue(args.errorHandler.errorMessages.isEmpty())
     }
 
     @Test
@@ -81,7 +82,7 @@ internal class ComposeClickedTargetIteratorTest {
         iterator.findTarget(decor, x = 150f, y = 200f)
 
         assertEquals(0, inner.locationCheckCount)
-        assertTrue(args.logger.errorMessages.isEmpty())
+        assertTrue(args.errorHandler.errorMessages.isEmpty())
     }
 
     @Test
@@ -96,7 +97,7 @@ internal class ComposeClickedTargetIteratorTest {
         iterator.findTarget(decor, x = 100f, y = 200f)
 
         assertEquals(0, inner.locationCheckCount)
-        assertTrue(args.logger.errorMessages.isEmpty())
+        assertTrue(args.errorHandler.errorMessages.isEmpty())
     }
 
     @Test
@@ -115,7 +116,7 @@ internal class ComposeClickedTargetIteratorTest {
         // outOfBoundsChild was added to the queue without a bounds check and processed,
         // so its child's location was queried
         assertEquals(1, inner.locationCheckCount)
-        assertTrue(args.logger.errorMessages.isEmpty())
+        assertTrue(args.errorHandler.errorMessages.isEmpty())
     }
 
     @Test
@@ -132,11 +133,12 @@ internal class ComposeClickedTargetIteratorTest {
         iterator.findTarget(decor, x = 50f, y = 50f)
 
         assertEquals(0, inner.locationCheckCount)
-        assertTrue(args.logger.errorMessages.isEmpty())
+        assertTrue(args.errorHandler.errorMessages.isEmpty())
     }
 
     @Test
-    fun `exception during traversal is caught and logged`() {
+    fun `exception during traversal is caught and reported`() {
+        args.errorHandler.throwOnSdkError = false
         val throwingChild = object : View(context) {
             init { layout(0, 0, 100, 100) }
             override fun getLocationInWindow(outLocation: IntArray) {
@@ -148,8 +150,7 @@ internal class ComposeClickedTargetIteratorTest {
 
         iterator.findTarget(decor, x = 50f, y = 50f)
 
-        assertEquals(1, args.logger.errorMessages.size)
-        assertEquals("Failed to find target", args.logger.errorMessages[0].msg)
+        assertEquals(SdkErrorType.UiCallbackFail.toString(), args.errorHandler.sdkErrorMessages.single().msg)
         assertTrue(taps.isEmpty())
     }
 
@@ -167,7 +168,7 @@ internal class ComposeClickedTargetIteratorTest {
 
         iterator.findTarget(decor, x = 50f, y = 50f)
 
-        assertTrue(args.logger.errorMessages.isEmpty())
+        assertTrue(args.errorHandler.errorMessages.isEmpty())
         assertTrue(taps.isEmpty())
     }
 }

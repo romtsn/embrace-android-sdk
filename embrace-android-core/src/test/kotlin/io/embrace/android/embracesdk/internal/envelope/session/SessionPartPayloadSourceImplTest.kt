@@ -3,12 +3,13 @@ package io.embrace.android.embracesdk.internal.envelope.session
 import io.embrace.android.embracesdk.fakes.FakeClock
 import io.embrace.android.embracesdk.fakes.FakeCurrentSessionPartSpan
 import io.embrace.android.embracesdk.fakes.FakeEmbraceSdkSpan
+import io.embrace.android.embracesdk.fakes.FakeErrorHandler
 import io.embrace.android.embracesdk.fakes.FakeOtelPayloadMapper
 import io.embrace.android.embracesdk.fakes.FakeProcessStateTracker
 import io.embrace.android.embracesdk.internal.arch.schema.EmbType
 import io.embrace.android.embracesdk.internal.arch.schema.ErrorCodeAttribute
 import io.embrace.android.embracesdk.internal.arch.state.ProcessState
-import io.embrace.android.embracesdk.internal.logging.InternalLoggerImpl
+import io.embrace.android.embracesdk.internal.logging.ErrorHandlerImpl
 import io.embrace.android.embracesdk.internal.otel.spans.SpanRepository
 import io.embrace.android.embracesdk.internal.otel.spans.SpanTerminationMode
 import io.embrace.android.embracesdk.internal.otel.spans.hasEmbraceAttribute
@@ -38,7 +39,7 @@ internal class SessionPartPayloadSourceImplTest {
             initializeService(1000L)
         }
         activeSpan = FakeEmbraceSdkSpan.started()
-        spanRepository = SpanRepository().apply {
+        spanRepository = SpanRepository(FakeErrorHandler()).apply {
             storeCompletedOtelSpans(listOf(cacheSpan))
         }
         spanRepository.trackStartedEmbraceSpan(checkNotNull(currentSessionPartSpan.sessionPartSpan))
@@ -50,7 +51,7 @@ internal class SessionPartPayloadSourceImplTest {
             FakeOtelPayloadMapper(),
             FakeProcessStateTracker(),
             FakeClock(),
-            InternalLoggerImpl(),
+            ErrorHandlerImpl(),
         )
     }
 
@@ -82,7 +83,7 @@ internal class SessionPartPayloadSourceImplTest {
         val timedOutSpan = FakeEmbraceSdkSpan(terminationMode = SpanTerminationMode.Timeout(1000L)).apply {
             start(clock.now())
         }
-        val repository = SpanRepository().apply {
+        val repository = SpanRepository(FakeErrorHandler()).apply {
             trackStartedEmbraceSpan(checkNotNull(currentSessionPartSpan.sessionPartSpan))
             trackStartedEmbraceSpan(timedOutSpan)
         }
@@ -93,7 +94,7 @@ internal class SessionPartPayloadSourceImplTest {
             FakeOtelPayloadMapper(),
             FakeProcessStateTracker(),
             clock,
-            InternalLoggerImpl(),
+            ErrorHandlerImpl(),
         )
 
         clock.tick(2000L)
@@ -129,7 +130,7 @@ internal class SessionPartPayloadSourceImplTest {
         val timedOutSpan = FakeEmbraceSdkSpan(terminationMode = SpanTerminationMode.Timeout(1000L)).apply {
             start(clock.now())
         }
-        val repository = SpanRepository().apply {
+        val repository = SpanRepository(FakeErrorHandler()).apply {
             trackStartedEmbraceSpan(checkNotNull(currentSessionPartSpan.sessionPartSpan))
             trackStartedEmbraceSpan(timedOutSpan)
         }
@@ -140,7 +141,7 @@ internal class SessionPartPayloadSourceImplTest {
             FakeOtelPayloadMapper(),
             FakeProcessStateTracker(),
             clock,
-            InternalLoggerImpl(),
+            ErrorHandlerImpl(),
         )
 
         clock.tick(2000L)
@@ -155,7 +156,7 @@ internal class SessionPartPayloadSourceImplTest {
         val terminatedSpan = FakeEmbraceSdkSpan(terminationMode = SpanTerminationMode.OnBackground).apply {
             start(0L)
         }
-        val repository = SpanRepository().apply {
+        val repository = SpanRepository(FakeErrorHandler()).apply {
             trackStartedEmbraceSpan(checkNotNull(currentSessionPartSpan.sessionPartSpan))
             trackStartedEmbraceSpan(terminatedSpan)
         }
@@ -166,7 +167,7 @@ internal class SessionPartPayloadSourceImplTest {
             FakeOtelPayloadMapper(),
             FakeProcessStateTracker(ProcessState.BACKGROUND),
             FakeClock(),
-            InternalLoggerImpl(),
+            ErrorHandlerImpl(),
         )
         source.endSessionPart(SessionPartSnapshotType.NORMAL_END, true)
         assertFalse(terminatedSpan.isRecording)
@@ -191,7 +192,7 @@ internal class SessionPartPayloadSourceImplTest {
             otelPayloadMapper,
             FakeProcessStateTracker(),
             FakeClock(),
-            InternalLoggerImpl(),
+            ErrorHandlerImpl(),
         )
         source.endSessionPart(SessionPartSnapshotType.NORMAL_END, true)
         assertTrue(otelPayloadMapper.recordCalled)

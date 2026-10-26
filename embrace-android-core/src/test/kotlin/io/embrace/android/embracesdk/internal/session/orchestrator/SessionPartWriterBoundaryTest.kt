@@ -5,7 +5,7 @@ import io.embrace.android.embracesdk.fakes.FakeClock
 import io.embrace.android.embracesdk.fakes.FakeConfigService
 import io.embrace.android.embracesdk.fakes.FakeCurrentSessionPartSpan
 import io.embrace.android.embracesdk.fakes.FakeEmbraceSdkSpan
-import io.embrace.android.embracesdk.fakes.FakeInternalLogger
+import io.embrace.android.embracesdk.fakes.FakeErrorHandler
 import io.embrace.android.embracesdk.fakes.FakeInternalTelemetryService
 import io.embrace.android.embracesdk.fakes.TestUuidSource
 import io.embrace.android.embracesdk.internal.arch.schema.EmbType
@@ -50,7 +50,7 @@ internal class SessionPartWriterBoundaryTest {
     private lateinit var sessionsDir: File
     private lateinit var clock: FakeClock
     private lateinit var executor: BlockingScheduledExecutorService
-    private lateinit var logger: FakeInternalLogger
+    private lateinit var errorHandler: FakeErrorHandler
     private lateinit var writer: SessionPartWriter
     private var writeCount = 0
     private var resourceCount = 0
@@ -72,7 +72,7 @@ internal class SessionPartWriterBoundaryTest {
         sessionsDir = tempFolder.newFolder("embrace_sessions_split")
         clock = FakeClock()
         executor = BlockingScheduledExecutorService(clock, true)
-        logger = FakeInternalLogger(throwOnInternalError = false)
+        errorHandler = FakeErrorHandler(throwOnSdkError = false)
         writeCount = 0
         resourceCount = 0
         spanCount = 0
@@ -87,7 +87,7 @@ internal class SessionPartWriterBoundaryTest {
             ),
             TestUuidSource(),
             clock,
-            logger,
+            errorHandler,
             resourceSource,
             { EnvelopeMetadata(userId = "user${writeCount++}") },
             currentSessionPartSpan,
@@ -109,7 +109,7 @@ internal class SessionPartWriterBoundaryTest {
         assertEquals("user1", metadataIn(FIRST_PART_ID)?.user_id)
         assertEquals("user2", metadataIn(SECOND_PART_ID)?.user_id)
         assertEquals(3, writeCount)
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -128,7 +128,7 @@ internal class SessionPartWriterBoundaryTest {
         assertEquals("user1", metadataIn(FIRST_PART_ID)?.user_id)
         assertEquals("user2", metadataIn(SECOND_PART_ID)?.user_id)
         assertEquals(3, writeCount)
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -146,7 +146,7 @@ internal class SessionPartWriterBoundaryTest {
         assertEquals("user0", metadataIn(FIRST_PART_ID)?.user_id)
         assertEquals("user2", metadataIn(SECOND_PART_ID)?.user_id)
         assertEquals(3, writeCount)
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -162,7 +162,7 @@ internal class SessionPartWriterBoundaryTest {
         assertEquals("span0", sessionSpanIn(FIRST_PART_ID)?.name)
         assertEquals("span1", sessionSpanIn(SECOND_PART_ID)?.name)
         assertEquals(2, spanCount)
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -183,7 +183,7 @@ internal class SessionPartWriterBoundaryTest {
             assertNull(end_time_unix_nano)
         }
         assertEquals(2, spanCount)
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -201,7 +201,7 @@ internal class SessionPartWriterBoundaryTest {
 
         assertEquals("span0", sessionSpanIn(FIRST_PART_ID)?.name)
         assertEquals("span-refreshed", sessionSpanIn(SECOND_PART_ID)?.name)
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -216,7 +216,7 @@ internal class SessionPartWriterBoundaryTest {
 
         // the session span queued by the end of the part is the first write to find the directory
         // gone, and the part is given up so no later write reports it again
-        assertEquals(listOf("CompletedSpansWriteFail"), logger.internalErrorMessages.map { it.msg })
+        assertEquals(listOf("CompletedSpansWriteFail"), errorHandler.sdkErrorMessages.map { it.msg })
         assertEquals("span1", sessionSpanIn(SECOND_PART_ID)?.name)
     }
 
@@ -229,7 +229,7 @@ internal class SessionPartWriterBoundaryTest {
 
         assertEquals("resource0", metadataIn(FIRST_PART_ID)?.resource?.app_version)
         assertEquals("resource1", metadataIn(SECOND_PART_ID)?.resource?.app_version)
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -246,7 +246,23 @@ internal class SessionPartWriterBoundaryTest {
 
         val displacedBy = partSpans.getValue(SECOND_PART_ID).spanId
         assertNull(spanSnapshotsIn(FIRST_PART_ID).firstOrNull { it.span_id == displacedBy })
-        assertInternalErrors("SessionPartEndMissed")
+        assertSdkErrors("SessionPartEndMissed")
+    }
+
+    @Test
+    fun `close flushes pending writes then seals the current part`() {
+        startPart(FIRST_PART_ID)
+        drain()
+        writer.onMetadataChanged()
+        writer.close()
+        drain()
+        assertEquals("user1", metadataIn(FIRST_PART_ID)?.user_id)
+
+        writer.onMetadataChanged()
+        drain()
+        assertEquals("user1", metadataIn(FIRST_PART_ID)?.user_id)
+        assertEquals(2, writeCount)
+        assertNoSdkErrors()
     }
 
     private fun activeSpans(): List<EmbraceSdkSpan> =
@@ -305,11 +321,11 @@ internal class SessionPartWriterBoundaryTest {
     private fun partFile(sessionPartId: String, fileName: String): File? =
         File(File(sessionsDir, dirFor(sessionPartId).dirName), fileName).takeIf(File::isFile)
 
-    private fun assertInternalErrors(vararg expected: String) {
-        assertEquals(expected.sorted(), logger.internalErrorMessages.map { it.msg }.sorted())
+    private fun assertSdkErrors(vararg expected: String) {
+        assertEquals(expected.sorted(), errorHandler.sdkErrorMessages.map { it.msg }.sorted())
     }
 
-    private fun assertNoInternalErrors() {
-        assertEquals(emptyList<FakeInternalLogger.LogMessage>(), logger.internalErrorMessages)
+    private fun assertNoSdkErrors() {
+        assertEquals(emptyList<FakeErrorHandler.LogMessage>(), errorHandler.sdkErrorMessages)
     }
 }

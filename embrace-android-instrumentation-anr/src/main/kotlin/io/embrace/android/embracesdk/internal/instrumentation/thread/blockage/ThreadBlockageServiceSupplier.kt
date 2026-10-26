@@ -4,11 +4,6 @@ import android.os.Looper
 import io.embrace.android.embracesdk.internal.arch.InstrumentationArgs
 import io.embrace.android.embracesdk.internal.worker.Worker
 
-/**
- * Function that returns an instance of [ThreadBlockageService].
- */
-typealias ThreadBlockageServiceSupplier = (args: InstrumentationArgs) -> ThreadBlockageService?
-
 fun createThreadBlockageService(args: InstrumentationArgs): ThreadBlockageService? {
     val configService = args.configService
     if (!configService.config.autoDataCapture.threadBlockageCaptureEnabled ||
@@ -35,7 +30,7 @@ fun createThreadBlockageService(args: InstrumentationArgs): ThreadBlockageServic
             watchdogWorker = watchdogWorker,
             clock = args.clock,
             looper = looper,
-            logger = args.logger,
+            errorHandler = args.errorHandler,
             intervalMs = cfg.sampleIntervalMs,
             blockedDurationThreshold = cfg.minDurationMs,
             listener = stacktraceSampler,

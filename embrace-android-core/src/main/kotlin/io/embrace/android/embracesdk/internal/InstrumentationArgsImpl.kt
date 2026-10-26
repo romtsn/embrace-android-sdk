@@ -12,8 +12,10 @@ import io.embrace.android.embracesdk.internal.arch.state.ProcessStateTracker
 import io.embrace.android.embracesdk.internal.capture.session.UserSessionPropertiesService
 import io.embrace.android.embracesdk.internal.clock.Clock
 import io.embrace.android.embracesdk.internal.config.ConfigService
-import io.embrace.android.embracesdk.internal.injection.WorkerThreadModule
-import io.embrace.android.embracesdk.internal.logging.InternalLogger
+import io.embrace.android.embracesdk.internal.injection.WorkerThreadPool
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
+import io.embrace.android.embracesdk.internal.logging.guardSdkCode
 import io.embrace.android.embracesdk.internal.network.http.HttpRequestInfoModifierChain
 import io.embrace.android.embracesdk.internal.serialization.PlatformSerializer
 import io.embrace.android.embracesdk.internal.session.id.SessionIdsSnapshot
@@ -32,7 +34,7 @@ import java.util.concurrent.ConcurrentHashMap
 internal class InstrumentationArgsImpl(
     override val configService: ConfigService,
     override val destination: TelemetryDestination,
-    override val logger: InternalLogger,
+    override val errorHandler: ErrorHandler,
     override val clock: Clock,
     override val context: Context,
     override val application: Application,
@@ -44,7 +46,7 @@ internal class InstrumentationArgsImpl(
     override val processStateTracker: ProcessStateTracker,
     override val navigationTrackingService: NavigationTrackingService,
     override val telemetryService: InternalTelemetryService,
-    private val workerThreadModule: WorkerThreadModule,
+    private val workerThreadPool: WorkerThreadPool,
     private val sessionPartTracker: SessionPartTracker,
     private val userSessionPropertiesService: UserSessionPropertiesService,
     private val userSessionIdsProvider: () -> String?,
@@ -58,15 +60,15 @@ internal class InstrumentationArgsImpl(
     override val store: KeyValueStore by lazy { storeProvider() }
 
     override val packageInfo: PackageInfo? by lazy {
-        runCatching { context.packageManager.getPackageInfo(context.packageName, 0) }.getOrNull()
+        errorHandler.guardSdkCode(SdkErrorType.Ignored, null) { context.packageManager.getPackageInfo(context.packageName, 0) }
     }
 
-    override val httpRequestInfoModifierChain: HttpRequestInfoModifierChain = HttpRequestInfoModifierChain(logger)
+    override val httpRequestInfoModifierChain: HttpRequestInfoModifierChain = HttpRequestInfoModifierChain(errorHandler)
 
-    override fun backgroundWorker(worker: Worker.Background): BackgroundWorker = workerThreadModule.backgroundWorker(worker)
+    override fun backgroundWorker(worker: Worker.Background): BackgroundWorker = workerThreadPool.backgroundWorker(worker)
     override fun <T> priorityWorker(
         worker: Worker.Priority,
-    ): PriorityWorker<T> = workerThreadModule.priorityWorker(worker)
+    ): PriorityWorker<T> = workerThreadPool.priorityWorker(worker)
 
     private val memo = ConcurrentHashMap<String, Any>()
 
@@ -94,7 +96,6 @@ internal class InstrumentationArgsImpl(
     }
 
     @Suppress("UNCHECKED_CAST")
-    private fun <T> Context.getSystemServiceSafe(name: String): T? = runCatching {
-        getSystemService(name)
-    }.getOrNull() as T?
+    private fun <T> Context.getSystemServiceSafe(name: String): T? =
+        errorHandler.guardSdkCode(SdkErrorType.Ignored, null) { getSystemService(name) } as T?
 }

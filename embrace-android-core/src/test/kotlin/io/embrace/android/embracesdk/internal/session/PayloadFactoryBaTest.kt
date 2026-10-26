@@ -3,23 +3,24 @@ package io.embrace.android.embracesdk.internal.session
 import io.embrace.android.embracesdk.concurrency.BlockingScheduledExecutorService
 import io.embrace.android.embracesdk.fakes.FakeClock
 import io.embrace.android.embracesdk.fakes.FakeConfigService
+import io.embrace.android.embracesdk.fakes.FakeLogEnvelopeSource
 import io.embrace.android.embracesdk.fakes.FakeMetadataService
 import io.embrace.android.embracesdk.fakes.FakeOtelPayloadMapper
 import io.embrace.android.embracesdk.fakes.FakeProcessStateTracker
 import io.embrace.android.embracesdk.fakes.FakeSessionIdsProvider
+import io.embrace.android.embracesdk.fakes.FakeSessionPartEnvelopeSource
 import io.embrace.android.embracesdk.fakes.FakeSessionPartTracker
 import io.embrace.android.embracesdk.fakes.FakeUserService
 import io.embrace.android.embracesdk.fakes.OtelSdkMode
 import io.embrace.android.embracesdk.fakes.fakeSessionPartToken
-import io.embrace.android.embracesdk.fakes.injection.FakeInitModule
-import io.embrace.android.embracesdk.fakes.injection.FakePayloadSourceModule
+import io.embrace.android.embracesdk.fakes.injection.TestInitServices
 import io.embrace.android.embracesdk.internal.arch.state.ProcessState
 import io.embrace.android.embracesdk.internal.capture.metadata.MetadataService
 import io.embrace.android.embracesdk.internal.capture.user.UserService
 import io.embrace.android.embracesdk.internal.config.resolved.BackgroundActivityConfig
 import io.embrace.android.embracesdk.internal.config.resolved.EmbraceConfig
 import io.embrace.android.embracesdk.internal.envelope.session.SessionPartPayloadSourceImpl
-import io.embrace.android.embracesdk.internal.logging.InternalLoggerImpl
+import io.embrace.android.embracesdk.internal.logging.ErrorHandlerImpl
 import io.embrace.android.embracesdk.internal.otel.spans.SpanRepository
 import io.embrace.android.embracesdk.internal.session.message.PayloadFactoryImpl
 import io.embrace.android.embracesdk.internal.session.message.PayloadMessageCollatorImpl
@@ -60,9 +61,9 @@ internal class PayloadFactoryBaTest(
         sessionTracker = FakeSessionPartTracker()
         activityService = FakeProcessStateTracker(ProcessState.BACKGROUND)
         userService = FakeUserService()
-        val initModule = FakeInitModule(clock = clock, otelSdkMode = otelSdkMode)
-        spanRepository = initModule.openTelemetryModule.spanRepository
-        currentSessionPartSpan = initModule.openTelemetryModule.currentSessionPartSpan
+        val initServices = TestInitServices(clock = clock, otelSdkMode = otelSdkMode)
+        spanRepository = initServices.otelStack.spanRepository
+        currentSessionPartSpan = initServices.otelStack.currentSessionPartSpan
         configService = FakeConfigService(
             config = EmbraceConfig(
                 backgroundActivity = { BackgroundActivityConfig(captureEnabled = { true }) },
@@ -112,8 +113,8 @@ internal class PayloadFactoryBaTest(
     }
 
     private fun createService(createInitialSession: Boolean = true): PayloadFactoryImpl {
-        val logger = InternalLoggerImpl()
-        val payloadSourceModule = FakePayloadSourceModule(
+        val errorHandler = ErrorHandlerImpl()
+        val sessionPartEnvelopeSource = FakeSessionPartEnvelopeSource(
             partPayloadSource = SessionPartPayloadSourceImpl(
                 null,
                 currentSessionPartSpan,
@@ -121,15 +122,15 @@ internal class PayloadFactoryBaTest(
                 FakeOtelPayloadMapper(),
                 FakeProcessStateTracker(),
                 FakeClock(),
-                logger,
+                errorHandler,
             ),
         )
         val collator = PayloadMessageCollatorImpl(
-            payloadSourceModule.sessionPartEnvelopeSource,
+            sessionPartEnvelopeSource,
             currentSessionPartSpan,
             FakeSessionIdsProvider(),
         )
-        return PayloadFactoryImpl(collator, payloadSourceModule.logEnvelopeSource, configService, logger).apply {
+        return PayloadFactoryImpl(collator, FakeLogEnvelopeSource(), configService, errorHandler).apply {
             if (createInitialSession) {
                 startPayloadWithState(ProcessState.BACKGROUND, clock.now(), true, { 1 }, { 1 })
             }

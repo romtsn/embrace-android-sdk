@@ -1,14 +1,14 @@
 package io.embrace.android.embracesdk.internal.session.orchestrator
 
 import android.app.ActivityManager
-import androidx.test.ext.junit.runners.AndroidJUnit4
+import android.app.Application
 import io.embrace.android.embracesdk.SessionStateEvent
 import io.embrace.android.embracesdk.concurrency.BlockingScheduledExecutorService
 import io.embrace.android.embracesdk.fakes.FakeClock
 import io.embrace.android.embracesdk.fakes.FakeConfigService
 import io.embrace.android.embracesdk.fakes.FakeCurrentSessionPartSpan
 import io.embrace.android.embracesdk.fakes.FakeDataSource
-import io.embrace.android.embracesdk.fakes.FakeInternalLogger
+import io.embrace.android.embracesdk.fakes.FakeErrorHandler
 import io.embrace.android.embracesdk.fakes.FakeKeyValueStore
 import io.embrace.android.embracesdk.fakes.FakeLogEnvelopeSource
 import io.embrace.android.embracesdk.fakes.FakeLogLimitingService
@@ -23,7 +23,6 @@ import io.embrace.android.embracesdk.fakes.FakeUserSessionPropertiesService
 import io.embrace.android.embracesdk.fakes.TestUuidSource
 import io.embrace.android.embracesdk.fakes.behavior.FakeUserSessionBehavior
 import io.embrace.android.embracesdk.fakes.fakeBackgroundWorker
-import io.embrace.android.embracesdk.fakes.injection.FakePayloadSourceModule
 import io.embrace.android.embracesdk.internal.arch.InstrumentationRegistry
 import io.embrace.android.embracesdk.internal.arch.InstrumentationRegistryImpl
 import io.embrace.android.embracesdk.internal.arch.startup.StartupClassifierImpl
@@ -34,7 +33,7 @@ import io.embrace.android.embracesdk.internal.config.resolved.BackgroundActivity
 import io.embrace.android.embracesdk.internal.config.resolved.EmbraceConfig
 import io.embrace.android.embracesdk.internal.delivery.caching.PayloadCachingService
 import io.embrace.android.embracesdk.internal.delivery.caching.PayloadCachingServiceImpl
-import io.embrace.android.embracesdk.internal.logging.InternalErrorType
+import io.embrace.android.embracesdk.internal.session.SessionPartToken
 import io.embrace.android.embracesdk.internal.session.UserSessionListener
 import io.embrace.android.embracesdk.internal.session.UserSessionMetadata
 import io.embrace.android.embracesdk.internal.session.UserSessionMetadataStore
@@ -49,11 +48,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
-import org.junit.runner.RunWith
-import org.robolectric.RuntimeEnvironment
 import java.util.concurrent.TimeUnit
 
-@RunWith(AndroidJUnit4::class)
 internal class SessionOrchestratorListenerTest {
 
     private lateinit var orchestrator: SessionOrchestratorImpl
@@ -71,7 +67,7 @@ internal class SessionOrchestratorListenerTest {
     private lateinit var sessionCacheExecutor: BlockingScheduledExecutorService
     private lateinit var instrumentationRegistry: InstrumentationRegistry
     private lateinit var fakeDataSource: FakeDataSource
-    private lateinit var logger: FakeInternalLogger
+    private lateinit var errorHandler: FakeErrorHandler
     private lateinit var startupClassifier: StartupClassifierImpl
     private lateinit var currentSessionPartSpan: FakeCurrentSessionPartSpan
     private lateinit var destination: FakeTelemetryDestination
@@ -83,7 +79,7 @@ internal class SessionOrchestratorListenerTest {
     @Before
     fun setUp() {
         clock = FakeClock()
-        logger = FakeInternalLogger(throwOnInternalError = false)
+        errorHandler = FakeErrorHandler(throwOnSdkError = false)
         startupClassifier = StartupClassifierImpl()
         configService = FakeConfigService(
             config = EmbraceConfig(
@@ -218,7 +214,8 @@ internal class SessionOrchestratorListenerTest {
         clock.tick(10000)
         orchestrator.endSessionWithManual()
         assertTrue(secondListenerInvoked)
-        assertTrue(logger.internalErrorMessages.any { it.msg == InternalErrorType.UserSessionCallbackFail.toString() })
+        assertTrue(errorHandler.sdkErrorMessages.isEmpty())
+        assertEquals("simulated listener failure", errorHandler.warningMessages.first().throwable?.message)
     }
 
     @Test
@@ -239,6 +236,48 @@ internal class SessionOrchestratorListenerTest {
 
         assertTrue(innerRegistered)
         assertEquals(listOf(SessionStateEvent.UserSessionActive::class), innerEvents.map { it::class })
+    }
+
+    @Test
+    fun `ending the user session from a listener runs after the in-progress transition completes`() {
+        configService = sessionBehaviorConfig()
+        createOrchestrator(ProcessState.FOREGROUND)
+        orchestrator.onBackground()
+        clock.tick(maxDurationMs + 1)
+
+        val events = mutableListOf<SessionStateEvent>()
+        var partSeenByListener: SessionPartToken? = null
+        orchestrator.addUserSessionListener { event ->
+            events.add(event)
+            if (event is SessionStateEvent.UserSessionActive && partSeenByListener == null && events.size > 1) {
+                partSeenByListener = sessionTracker.getActiveSessionPart()
+                orchestrator.endSessionWithManual()
+            }
+        }
+        events.clear()
+
+        // foregrounding after inactivity starts a new user session, whose listener ends it straight away
+        orchestrator.onForeground()
+
+        // the listener sees the part the transition created, not the one it ended
+        val seen = checkNotNull(partSeenByListener)
+        assertEquals(ProcessState.FOREGROUND, seen.processState)
+
+        // the manual end replaced that part with another, rather than being overwritten by the outer transition
+        val active = checkNotNull(sessionTracker.getActiveSessionPart())
+        assertEquals(seen.sessionPartNumber + 1, active.sessionPartNumber)
+
+        assertEquals(
+            listOf(
+                SessionStateEvent.UserSessionEnded::class,
+                SessionStateEvent.UserSessionActive::class,
+                SessionStateEvent.UserSessionEnded::class,
+                SessionStateEvent.UserSessionActive::class,
+            ),
+            events.map { it::class },
+        )
+        assertEquals(events[1].userSessionId, events[2].userSessionId)
+        assertEquals(events[3].userSessionId, orchestrator.currentUserSession()?.userSessionId)
     }
 
     @Test
@@ -342,25 +381,24 @@ internal class SessionOrchestratorListenerTest {
         currentSessionPartSpan = FakeCurrentSessionPartSpan(clock).apply { initializeService(clock.now()) }
         destination = FakeTelemetryDestination()
         payloadCollator = FakePayloadMessageCollator(currentSessionPartSpan = currentSessionPartSpan)
-        val payloadSourceModule = FakePayloadSourceModule()
-        logEnvelopeSource = payloadSourceModule.logEnvelopeSource
+        logEnvelopeSource = FakeLogEnvelopeSource()
         payloadFactory = PayloadFactoryImpl(
             payloadMessageCollator = payloadCollator,
-            logEnvelopeSource = payloadSourceModule.logEnvelopeSource,
+            logEnvelopeSource = logEnvelopeSource,
             configService = configService,
-            logger = logger,
+            errorHandler = errorHandler,
         )
         userSessionPropertiesService = FakeUserSessionPropertiesService()
         userService = FakeUserService()
         sessionTracker = SessionPartTrackerImpl(
             activityManager = lazyOf<ActivityManager?>(null),
-            logger = logger,
+            errorHandler = errorHandler,
         )
         sessionCacheExecutor = BlockingScheduledExecutorService(clock, true)
         payloadCachingService = PayloadCachingServiceImpl(
             PeriodicSessionPartCacher(
                 BackgroundWorker(sessionCacheExecutor),
-                logger,
+                errorHandler,
             ),
             clock,
             object : SessionIdsProvider {
@@ -371,9 +409,9 @@ internal class SessionOrchestratorListenerTest {
             },
             store,
         )
-        fakeDataSource = FakeDataSource(RuntimeEnvironment.getApplication())
+        fakeDataSource = FakeDataSource(Application())
         instrumentationRegistry = InstrumentationRegistryImpl(
-            logger,
+            errorHandler,
         ).apply {
             add { fakeDataSource }
         }
@@ -403,7 +441,7 @@ internal class SessionOrchestratorListenerTest {
             ordinalStoreOverride ?: FakeOrdinalStore(),
             FakeKeyValueStore(),
             metadataStoreOverride ?: UserSessionMetadataStore(FakeKeyValueStore()),
-            logger,
+            errorHandler,
             fakeBackgroundWorker(),
             TestUuidSource(),
             startupClassifier,

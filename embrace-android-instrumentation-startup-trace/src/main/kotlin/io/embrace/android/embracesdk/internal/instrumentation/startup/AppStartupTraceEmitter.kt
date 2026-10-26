@@ -10,8 +10,8 @@ import io.embrace.android.embracesdk.internal.arch.startup.StartupType
 import io.embrace.android.embracesdk.internal.clock.Clock
 import io.embrace.android.embracesdk.internal.instrumentation.startup.ui.hasRenderEvent
 import io.embrace.android.embracesdk.internal.instrumentation.startup.ui.supportFrameCommitCallback
-import io.embrace.android.embracesdk.internal.logging.InternalErrorType
-import io.embrace.android.embracesdk.internal.logging.InternalLogger
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
 import io.embrace.android.embracesdk.internal.utils.EmbTrace
 import io.embrace.android.embracesdk.internal.utils.Provider
 import io.embrace.android.embracesdk.internal.utils.VersionChecker
@@ -47,7 +47,7 @@ internal class AppStartupTraceEmitter(
     private val startupServiceProvider: Provider<StartupService?>,
     private val destination: TelemetryDestination,
     private val versionChecker: VersionChecker,
-    private val logger: InternalLogger,
+    private val errorHandler: ErrorHandler,
     private val startupClassifier: StartupClassifier,
     manualEnd: Boolean,
     private val processInfo: ProcessInfo,
@@ -194,8 +194,8 @@ internal class AppStartupTraceEmitter(
                 name = name,
                 startTimeMs = startTimeMs,
                 endTimeMs = endTimeMs,
-                attributes = attributes,
-                events = events,
+                attributes = attributes.toMap(),
+                events = events.toList(),
                 errorCode = errorCode,
             ),
         )
@@ -249,8 +249,8 @@ internal class AppStartupTraceEmitter(
         if (rootSpan.isValid()) {
             appStartupRootSpan.set(rootSpan)
         } else {
-            logger.trackInternalError(
-                type = InternalErrorType.AppLaunchTraceFail,
+            errorHandler.trackSdkError(
+                type = SdkErrorType.AppLaunchTraceFail,
                 throwable = IllegalStateException("App startup trace could not be started"),
             )
         }

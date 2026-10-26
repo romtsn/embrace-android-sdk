@@ -1,8 +1,10 @@
 package io.embrace.android.embracesdk.internal.capture.user
 
 import io.embrace.android.embracesdk.internal.clock.Clock
-import io.embrace.android.embracesdk.internal.logging.InternalErrorType
-import io.embrace.android.embracesdk.internal.logging.InternalLogger
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
+import io.embrace.android.embracesdk.internal.logging.guardSdkCode
+import io.embrace.android.embracesdk.internal.logging.guardSdkCodeEach
 import io.embrace.android.embracesdk.internal.payload.UserInfo
 import io.embrace.android.embracesdk.internal.store.KeyValueStore
 import io.embrace.android.embracesdk.internal.utils.EmbTrace
@@ -14,7 +16,7 @@ import java.util.regex.Pattern
 internal class EmbraceUserService(
     private val impl: KeyValueStore,
     private val clock: Clock,
-    private val logger: InternalLogger,
+    private val errorHandler: ErrorHandler,
 ) : UserService {
 
     /**
@@ -63,12 +65,7 @@ internal class EmbraceUserService(
     }
 
     override fun loadUserInfoFromDisk(): UserInfo? {
-        return try {
-            getStoredUserInfo()
-        } catch (ex: Exception) {
-            logger.trackInternalError(InternalErrorType.UserLoadFail, ex)
-            null
-        }
+        return errorHandler.guardSdkCode(SdkErrorType.UserLoadFail, null, ::getStoredUserInfo)
     }
 
     override fun getUserInfo(): UserInfo = userInfo().copy()
@@ -193,11 +190,7 @@ internal class EmbraceUserService(
         synchronized(userInfoReference) {
             userInfoReference.set(newUserInfo)
         }
-        listeners.forEach { listener ->
-            runCatching(listener).onFailure {
-                logger.trackInternalError(InternalErrorType.UserInfoCallbackFail, it)
-            }
-        }
+        errorHandler.guardSdkCodeEach(SdkErrorType.UserInfoCallbackFail, listeners) { listener -> listener() }
     }
 
     /**

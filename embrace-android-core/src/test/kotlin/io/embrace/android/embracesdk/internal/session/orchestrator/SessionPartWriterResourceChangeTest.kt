@@ -5,7 +5,7 @@ import io.embrace.android.embracesdk.fakes.FakeClock
 import io.embrace.android.embracesdk.fakes.FakeConfigService
 import io.embrace.android.embracesdk.fakes.FakeCurrentSessionPartSpan
 import io.embrace.android.embracesdk.fakes.FakeEmbraceSdkSpan
-import io.embrace.android.embracesdk.fakes.FakeInternalLogger
+import io.embrace.android.embracesdk.fakes.FakeErrorHandler
 import io.embrace.android.embracesdk.fakes.FakeInternalTelemetryService
 import io.embrace.android.embracesdk.fakes.TestUuidSource
 import io.embrace.android.embracesdk.internal.config.resolved.EmbraceConfig
@@ -47,7 +47,7 @@ internal class SessionPartWriterResourceChangeTest {
     private lateinit var sessionsDir: File
     private lateinit var clock: FakeClock
     private lateinit var executor: BlockingScheduledExecutorService
-    private lateinit var logger: FakeInternalLogger
+    private lateinit var errorHandler: FakeErrorHandler
     private lateinit var currentSessionPartSpan: FakeCurrentSessionPartSpan
 
     private var bundleId = INITIAL_BUNDLE_ID
@@ -73,7 +73,7 @@ internal class SessionPartWriterResourceChangeTest {
         sessionsDir = tempFolder.newFolder("embrace_sessions_split")
         clock = FakeClock()
         executor = BlockingScheduledExecutorService(clock, true)
-        logger = FakeInternalLogger(throwOnInternalError = false)
+        errorHandler = FakeErrorHandler(throwOnSdkError = false)
         bundleId = INITIAL_BUNDLE_ID
         resourceReads = 0
         resourceListeners.clear()
@@ -97,7 +97,7 @@ internal class SessionPartWriterResourceChangeTest {
             assertEquals(USER_SESSION_ID, user_session_id)
             assertEquals(FIRST_PART_ID, session_part_id)
         }
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -115,7 +115,7 @@ internal class SessionPartWriterResourceChangeTest {
             assertEquals(USER_SESSION_ID, user_session_id)
             assertEquals(FIRST_PART_ID, session_part_id)
         }
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -127,7 +127,7 @@ internal class SessionPartWriterResourceChangeTest {
         assertTrue(resourceListeners.isEmpty())
         assertEquals(emptyList<SessionPartDirectory>(), partDirs())
         assertEquals(0, resourceReads)
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -141,7 +141,7 @@ internal class SessionPartWriterResourceChangeTest {
         assertTrue(resourceListeners.isEmpty())
         assertEquals(emptyList<SessionPartDirectory>(), partDirs())
         assertEquals(0, resourceReads)
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -158,7 +158,7 @@ internal class SessionPartWriterResourceChangeTest {
 
         assertEquals(INITIAL_BUNDLE_ID, bundleIdOnDisk(FIRST_PART_ID))
         assertEquals(CHANGED_BUNDLE_ID, bundleIdOnDisk(SECOND_PART_ID))
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -173,7 +173,7 @@ internal class SessionPartWriterResourceChangeTest {
 
         assertEquals(4, resourceReads)
         assertEquals("bundle-2.2", bundleIdOnDisk(FIRST_PART_ID))
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -186,7 +186,7 @@ internal class SessionPartWriterResourceChangeTest {
         drain()
 
         assertEquals(1, resourceListeners.size)
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -201,7 +201,7 @@ internal class SessionPartWriterResourceChangeTest {
 
         assertEquals(readsBeforeChange, resourceReads)
         assertEquals(INITIAL_BUNDLE_ID, bundleIdOnDisk(FIRST_PART_ID))
-        assertNoInternalErrors()
+        assertNoSdkErrors()
     }
 
     @Test
@@ -214,8 +214,8 @@ internal class SessionPartWriterResourceChangeTest {
         changeResource(CHANGED_BUNDLE_ID)
         drain()
 
-        assertEquals(1, logger.internalErrorMessages.size)
-        assertEquals("SessionMetadataWriteFail", logger.internalErrorMessages.single().msg)
+        assertEquals(1, errorHandler.sdkErrorMessages.size)
+        assertEquals("SessionMetadataWriteFail", errorHandler.sdkErrorMessages.single().msg)
     }
 
     private fun createWriter(enabled: Boolean = true) = SessionPartWriterImpl(
@@ -226,7 +226,7 @@ internal class SessionPartWriterResourceChangeTest {
         ),
         TestUuidSource(),
         clock,
-        logger,
+        errorHandler,
         resourceSource,
         { EnvelopeMetadata(userId = "my-user-id") },
         currentSessionPartSpan,
@@ -268,7 +268,7 @@ internal class SessionPartWriterResourceChangeTest {
     private fun bundleIdOnDisk(sessionPartId: String): String? =
         metadataOnDisk(sessionPartId)?.resource?.react_native_bundle_id
 
-    private fun assertNoInternalErrors() {
-        assertEquals(emptyList<FakeInternalLogger.LogMessage>(), logger.internalErrorMessages)
+    private fun assertNoSdkErrors() {
+        assertEquals(emptyList<FakeErrorHandler.LogMessage>(), errorHandler.sdkErrorMessages)
     }
 }

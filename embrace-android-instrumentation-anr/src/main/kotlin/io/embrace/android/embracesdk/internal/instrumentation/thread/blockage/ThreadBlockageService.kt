@@ -12,7 +12,8 @@ interface ThreadBlockageService :
     SessionPartChangeListener,
     CrashTeardownHandler,
     ProcessStateListener,
-    OtelPayloadMapper {
+    OtelPayloadMapper,
+    AutoCloseable {
 
     /**
      * Initializes capture of ANRs

@@ -2,13 +2,14 @@ package io.embrace.android.embracesdk.internal.instrumentation.crash.ndk
 
 import io.embrace.android.embracesdk.concurrency.BlockingScheduledExecutorService
 import io.embrace.android.embracesdk.fakes.FakeConfigService
+import io.embrace.android.embracesdk.fakes.FakeErrorHandler
 import io.embrace.android.embracesdk.fakes.FakeInstrumentationArgs
-import io.embrace.android.embracesdk.fakes.FakeInternalLogger
 import io.embrace.android.embracesdk.fakes.FakeJniDelegate
 import io.embrace.android.embracesdk.fakes.FakeMainThreadHandler
 import io.embrace.android.embracesdk.fakes.FakeSharedObjectLoader
 import io.embrace.android.embracesdk.internal.config.resolved.AutoDataCaptureConfig
 import io.embrace.android.embracesdk.internal.config.resolved.EmbraceConfig
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
 import io.embrace.android.embracesdk.internal.session.id.SessionIdsSnapshot
 import io.embrace.android.embracesdk.internal.worker.BackgroundWorker
 import org.junit.Assert.assertEquals
@@ -48,7 +49,7 @@ class NativeCrashHandlerInstallerImplTest {
 
         args = FakeInstrumentationArgs(
             configService = fakeConfigService,
-            logger = FakeInternalLogger(false),
+            errorHandler = FakeErrorHandler(false),
             backgroundWorkerSupplier = { BackgroundWorker(executorService) },
             sessionPartIdSupplier = { sessionPartId },
             userSessionIdSupplier = { userSessionId },
@@ -170,12 +171,12 @@ class NativeCrashHandlerInstallerImplTest {
     }
 
     @Test
-    fun `do not track internal error when loading embrace native fails`() {
+    fun `do not track SDK error when loading embrace native fails`() {
         fakeSharedObjectLoader.failLoad = true
 
         nativeCrashHandlerInstaller.install()
 
-        assertEquals(0, args.logger.internalErrorMessages.size)
+        assertEquals(0, args.errorHandler.sdkErrorMessages.size)
         assertFalse(fakeDelegate.signalHandlerInstalled)
     }
 
@@ -209,6 +210,29 @@ class NativeCrashHandlerInstallerImplTest {
         assertFalse(fakeDelegate.signalHandlerReinstalled)
         assertNull(fakeDelegate.reportPath)
         assertFalse(fakeDelegate.crashCaptureDisabled)
+    }
+
+    @Test
+    fun `JNI failure installing signal handlers is tracked and does not stop session tracking`() {
+        fakeDelegate.installError = UnsatisfiedLinkError()
+
+        nativeCrashHandlerInstaller.install()
+
+        assertEquals(SdkErrorType.NativeHandlerInstallFail.toString(), args.errorHandler.sdkErrorMessages.single().msg)
+        assertFalse(fakeDelegate.signalHandlerInstalled)
+        assertFalse(fakeDelegate.signalHandlerReinstalled)
+        assertEquals(1, args.sessionChangeListeners.size)
+    }
+
+    @Test
+    fun `JNI failure checking for overwritten handlers is tracked and does not stop session tracking`() {
+        fakeDelegate.checkError = UnsatisfiedLinkError()
+
+        nativeCrashHandlerInstaller.install()
+
+        assertEquals(SdkErrorType.NativeHandlerInstallFail.toString(), args.errorHandler.sdkErrorMessages.single().msg)
+        assertTrue(fakeDelegate.signalHandlerInstalled)
+        assertEquals(1, args.sessionChangeListeners.size)
     }
 
     private fun getFilename(): String = File(checkNotNull(fakeDelegate.reportPath)).name

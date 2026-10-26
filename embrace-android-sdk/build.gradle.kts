@@ -11,6 +11,7 @@ android {
         namespace = "io.embrace.android.embracesdk"
         consumerProguardFiles("embrace-proguard.cfg")
     }
+    testOptions.unitTests.isIncludeAndroidResources = true
 }
 
 dependencies {
@@ -73,7 +74,6 @@ dependencies {
     testImplementation(project(":embrace-android-instrumentation-androidx-navigation"))
     testImplementation(platform(libs.okhttp.bom))
     testImplementation(libs.mockwebserver)
-    testImplementation(libs.mockk)
     testImplementation(platform(libs.opentelemetry.bom))
     testImplementation(libs.opentelemetry.sdk)
     testImplementation(libs.robolectric)

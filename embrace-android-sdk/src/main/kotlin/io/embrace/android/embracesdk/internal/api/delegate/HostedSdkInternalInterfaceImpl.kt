@@ -16,8 +16,9 @@ import io.embrace.android.embracesdk.internal.config.ConfigService
 import io.embrace.android.embracesdk.internal.envelope.metadata.HostedSdkVersionInfo
 import io.embrace.android.embracesdk.internal.envelope.resource.EnvelopeResourceSource
 import io.embrace.android.embracesdk.internal.instrumentation.crash.jvm.JvmCrashDataSource
-import io.embrace.android.embracesdk.internal.logging.InternalErrorType
-import io.embrace.android.embracesdk.internal.logging.InternalLogger
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
+import io.embrace.android.embracesdk.internal.logging.guardSdkCode
 import io.embrace.android.embracesdk.internal.logs.LogExceptionType
 import io.embrace.android.embracesdk.internal.payload.JsException
 import io.embrace.android.embracesdk.internal.serialization.PlatformSerializer
@@ -35,7 +36,7 @@ internal class HostedSdkInternalInterfaceImpl(
     private val serializer: PlatformSerializer,
     private val rnBundleIdTracker: Lazy<RnBundleIdTracker>,
     private val hostedSdkVersionInfo: HostedSdkVersionInfo,
-    private val logger: InternalLogger,
+    private val errorHandler: ErrorHandler,
     private val telemetryService: InternalTelemetryService,
 ) : EmbraceInternalInterface,
     ReactNativeInternalInterface,
@@ -48,7 +49,7 @@ internal class HostedSdkInternalInterfaceImpl(
     override val unityInternalInterface: UnityInternalInterface = this
     override val flutterInternalInterface: FlutterInternalInterface = this
 
-    override fun isNetworkSpanForwardingEnabled(): Boolean = guard(false) {
+    override fun isNetworkSpanForwardingEnabled(): Boolean = errorHandler.guardSdkCode(SdkErrorType.PublicApiFail, false) {
         configService.networkSpanForwardingBehavior.isNetworkSpanForwardingEnabled()
     }
 
@@ -102,10 +103,11 @@ internal class HostedSdkInternalInterfaceImpl(
     ) = record("set_unity_metadata") {
         if (unityVersion == null || buildGuid == null) {
             val sdkVersionMessage = unitySdkVersion ?: "null or previous than 1.7.5"
-            logger.logError(
+            errorHandler.log(
                 "Unity metadata is corrupted or malformed. Unity version is " +
                     unityVersion + ", Unity build id is " + buildGuid +
                     " and Unity SDK version is " + sdkVersionMessage,
+                severity = ErrorHandler.Severity.ERROR,
             )
         } else if (unitySdkVersion != null) {
             hostedSdkVersionInfo.batch {
@@ -166,20 +168,10 @@ internal class HostedSdkInternalInterfaceImpl(
     }
 
     /**
-     * Records usage of the internal API [name] then performs [call], reporting anything it throws as an internal error.
+     * Records usage of the internal API [name] then performs [call], reporting anything it throws as an SDK error.
      */
-    private inline fun record(name: String, call: () -> Unit) = guard(Unit) {
+    private fun record(name: String, call: () -> Unit) = errorHandler.guardSdkCode(SdkErrorType.PublicApiFail) {
         telemetryService.onPublicApiCalled(name)
         call()
-    }
-
-    /**
-     * Performs [call], reporting anything it throws as an internal error and returning [fallback] instead.
-     */
-    private inline fun <T> guard(fallback: T, call: () -> T): T = try {
-        call()
-    } catch (exc: Throwable) {
-        logger.trackInternalError(InternalErrorType.PublicApiFail, exc)
-        fallback
     }
 }

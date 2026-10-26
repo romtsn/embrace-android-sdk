@@ -4,7 +4,9 @@ import android.app.Activity
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.View
-import io.embrace.android.embracesdk.internal.logging.InternalLogger
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
+import io.embrace.android.embracesdk.internal.logging.guardSdkCode
 import java.lang.ref.WeakReference
 
 /**
@@ -13,22 +15,20 @@ import java.lang.ref.WeakReference
  */
 internal class EmbraceGestureListener(
     activity: Activity,
-    private val logger: InternalLogger,
+    private val errorHandler: ErrorHandler,
     dataSource: ComposeTapDataSource,
 ) : GestureDetector.SimpleOnGestureListener() {
 
     private val activityRef: WeakReference<Activity> = WeakReference(activity)
-    private val composeClickedTargetIterator = ComposeClickedTargetIterator(logger, dataSource)
+    private val composeClickedTargetIterator = ComposeClickedTargetIterator(errorHandler, dataSource)
 
     override fun onSingleTapUp(event: MotionEvent): Boolean {
-        try {
+        errorHandler.guardSdkCode(SdkErrorType.UiCallbackFail) {
             activityRef.get()?.let { activity ->
                 activity.window?.let {
                     logTapUp(it.decorView, event)
                 }
             }
-        } catch (e: Throwable) {
-            logger.logError("Failed to process singleTapUp", e)
         }
         return false
     }

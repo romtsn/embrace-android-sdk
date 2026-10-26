@@ -23,7 +23,7 @@ import io.embrace.android.embracesdk.internal.session.id.SessionIdsSnapshot
 import io.embrace.android.embracesdk.internal.worker.Worker
 import io.embrace.android.embracesdk.semconv.EmbSessionAttributes
 import io.embrace.android.embracesdk.testcases.features.createNativeSymbolsForCurrentArch
-import io.embrace.android.embracesdk.testcases.persistence.MultiFilePersistenceParityTest.PersistenceMode
+import io.embrace.android.embracesdk.testcases.persistence.MultiFilePersistenceParityTestBase.PersistenceMode
 import io.embrace.android.embracesdk.testframework.OtelSdkMode
 import io.embrace.android.embracesdk.testframework.SdkIntegrationTestRule
 import io.embrace.android.embracesdk.testframework.actions.EmbraceActionInterface
@@ -128,7 +128,7 @@ internal class DeadSessionPartParityTest(
     fun `a native crash in the part the process died in is attached to it during the next launch`() {
         lateinit var deadPart: SessionIdsSnapshot
         killActiveSessionPart(instrumentedConfig = nativeCrashConfig) {
-            deadPart = testRule.moduleGraph.essentialServiceModule.sessionIdsProvider.getActiveSessionIds()
+            deadPart = testRule.services.sessionIdsProvider.getActiveSessionIds()
         }
         val crash = NativeCrashData(
             nativeCrashId = "dead-process-crash",
@@ -155,13 +155,13 @@ internal class DeadSessionPartParityTest(
         val deadProcesses = 3
         val deadPartIds = (1..deadProcesses).map { process ->
             if (process > 1) {
-                testRule.moduleGraph.essentialServiceModule.networkConnectivityService.close()
-                testRule.moduleGraph.openTelemetryModule.otelSdkConfig.shutdownExport()
-                testRule.moduleGraph.workerThreadModule.close()
+                testRule.services.networkConnectivityService.close()
+                testRule.services.otelSdkConfig.close()
+                testRule.services.workerThreadPool.close()
             }
             lateinit var deadPart: SessionIdsSnapshot
             killActiveSessionPart(killBeforeResurrection = true) {
-                deadPart = testRule.moduleGraph.essentialServiceModule.sessionIdsProvider.getActiveSessionIds()
+                deadPart = testRule.services.sessionIdsProvider.getActiveSessionIds()
             }
             deadPart.sessionPartId
         }
@@ -214,9 +214,9 @@ internal class DeadSessionPartParityTest(
         setupAction: EmbraceSetupInterface.() -> Unit = {},
         assertAction: EmbracePayloadAssertionInterface.() -> Unit,
     ) {
-        testRule.moduleGraph.essentialServiceModule.networkConnectivityService.close()
-        testRule.moduleGraph.openTelemetryModule.otelSdkConfig.shutdownExport()
-        testRule.moduleGraph.workerThreadModule.close()
+        testRule.services.networkConnectivityService.close()
+        testRule.services.otelSdkConfig.close()
+        testRule.services.workerThreadPool.close()
         testRule.runTest(
             instrumentedConfig = instrumentedConfig,
             persistedRemoteConfig = remoteConfig(),
@@ -281,7 +281,7 @@ internal class DeadSessionPartParityTest(
                 shutdownNow()
             }
         }
-        checkNotNull(testRule.moduleGraph.deliveryModule).intakeService.shutdown()
+        testRule.services.intakeService.shutdown()
     }
 
     private fun remoteConfig() = RemoteConfig(

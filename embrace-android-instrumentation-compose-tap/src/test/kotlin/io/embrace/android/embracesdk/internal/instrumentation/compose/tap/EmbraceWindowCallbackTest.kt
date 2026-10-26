@@ -54,7 +54,7 @@ internal class EmbraceWindowCallbackTest {
                 return super.onTouchEvent(ev)
             }
         }
-        val callback = EmbraceWindowCallback(recordingDelegate, recordingDetector, args.logger)
+        val callback = EmbraceWindowCallback(recordingDelegate, recordingDetector, args.errorHandler)
         val event = MotionEvent.obtain(0L, 0L, MotionEvent.ACTION_DOWN, 10f, 20f, 0)
 
         try {
@@ -65,7 +65,39 @@ internal class EmbraceWindowCallbackTest {
             assertSame(event, recordingDelegate.lastTouchEvent)
             assertEquals(1, recordingDetector.callCount)
             assertNotSame(event, recordingDetector.lastEvent)
-            assertTrue(args.logger.errorMessages.isEmpty())
+            assertTrue(args.errorHandler.errorMessages.isEmpty())
+        } finally {
+            event.recycle()
+        }
+    }
+
+    @Test
+    fun `closed callback does not feed the gesture detector but still forwards to the delegate`() {
+        val activity = buildActivity(Activity::class.java).setup().get()
+        val recordingDelegate = object : Window.Callback by activity.window.callback {
+            var touchEventCallCount: Int = 0
+
+            override fun dispatchTouchEvent(event: MotionEvent?): Boolean {
+                touchEventCallCount++
+                return true
+            }
+        }
+        val recordingDetector = object : GestureDetector(context, SimpleOnGestureListener()) {
+            var callCount: Int = 0
+
+            override fun onTouchEvent(ev: MotionEvent): Boolean {
+                callCount++
+                return super.onTouchEvent(ev)
+            }
+        }
+        val callback = EmbraceWindowCallback(recordingDelegate, recordingDetector, args.errorHandler)
+        callback.close()
+        val event = MotionEvent.obtain(0L, 0L, MotionEvent.ACTION_DOWN, 10f, 20f, 0)
+
+        try {
+            assertTrue(callback.dispatchTouchEvent(event))
+            assertEquals(1, recordingDelegate.touchEventCallCount)
+            assertEquals(0, recordingDetector.callCount)
         } finally {
             event.recycle()
         }

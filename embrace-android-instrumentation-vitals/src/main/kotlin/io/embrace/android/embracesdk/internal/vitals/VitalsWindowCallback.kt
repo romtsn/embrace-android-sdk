@@ -12,12 +12,21 @@ import android.view.Window
  */
 internal class VitalsWindowCallback(
     private val delegate: Window.Callback,
-    private val focalCallbacks: FocalInteractionCallbacks,
-) : Window.Callback by delegate {
+    focalCallbacks: FocalInteractionCallbacks,
+) : Window.Callback by delegate, AutoCloseable {
 
-    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+    // nulled on close so that a window outliving the SDK does not retain it
+    @Volatile
+    private var focalCallbacks: FocalInteractionCallbacks? = focalCallbacks
+
+    override fun close() {
+        focalCallbacks = null
+    }
+
+    override fun dispatchTouchEvent(event: MotionEvent?): Boolean {
+        val focalCallbacks = focalCallbacks ?: return delegate.dispatchTouchEvent(event)
         try {
-            when (event.actionMasked) {
+            when (event?.actionMasked) {
                 MotionEvent.ACTION_DOWN -> focalCallbacks.onInteractionStart()
                 MotionEvent.ACTION_MOVE -> focalCallbacks.onInteractionMove()
                 MotionEvent.ACTION_UP -> {
@@ -36,6 +45,7 @@ internal class VitalsWindowCallback(
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
+        val focalCallbacks = focalCallbacks ?: return delegate.onWindowFocusChanged(hasFocus)
         try {
             // gaining focus marks the end of the open transition; extends an in-flight screen load past the animation tail
             if (hasFocus) {

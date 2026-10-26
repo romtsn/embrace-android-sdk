@@ -1,8 +1,5 @@
 package io.embrace.android.embracesdk.internal.capture.session
 
-import android.content.Context
-import androidx.test.core.app.ApplicationProvider
-import androidx.test.ext.junit.runners.AndroidJUnit4
 import io.embrace.android.embracesdk.fakes.FakeConfigService
 import io.embrace.android.embracesdk.fakes.FakeInternalTelemetryService
 import io.embrace.android.embracesdk.fakes.FakeKeyValueStore
@@ -15,7 +12,6 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
-import org.junit.runner.RunWith
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -23,7 +19,6 @@ import java.util.concurrent.atomic.AtomicInteger
 private const val MAX_SESSION_PROPERTIES_FROM_CONFIG = 5
 private const val MAX_SESSION_PROPERTIES_DEFAULT = 10
 
-@RunWith(AndroidJUnit4::class)
 internal class EmbraceUserSessionPropertiesTest {
 
     companion object {
@@ -33,14 +28,12 @@ internal class EmbraceUserSessionPropertiesTest {
 
     private lateinit var store: FakeKeyValueStore
     private lateinit var props: EmbraceUserSessionProperties
-    private lateinit var context: Context
     private lateinit var configService: FakeConfigService
     private lateinit var destination: FakeTelemetryDestination
     private lateinit var telemetryService: FakeInternalTelemetryService
 
     @Before
     fun setUp() {
-        context = ApplicationProvider.getApplicationContext()
         store = FakeKeyValueStore()
 
         configService = FakeConfigService(
@@ -105,7 +98,7 @@ internal class EmbraceUserSessionPropertiesTest {
         assertTrue(props.add(KEY_VALID, VALUE_VALID, PropertyScope.PROCESS))
         assertEquals(1, props.get().size.toLong())
 
-        props.onNewUserSession()
+        props.onUserSessionEnded()
 
         assertEquals(1, props.get().size.toLong())
         assertEquals(VALUE_VALID, props.get()[KEY_VALID])
@@ -127,7 +120,7 @@ internal class EmbraceUserSessionPropertiesTest {
         props.add("processKey", "pv", PropertyScope.PROCESS)
         assertEquals(2, props.get().size.toLong())
 
-        props.onNewUserSession()
+        props.onUserSessionEnded()
 
         assertEquals(1, props.get().size.toLong())
         assertEquals("pv", props.get()["processKey"])
@@ -135,7 +128,7 @@ internal class EmbraceUserSessionPropertiesTest {
     }
 
     @Test
-    fun `addPropsForNewSessionPartSpan includes permanent and process but not session`() {
+    fun `addPropsForNewSessionPartSpan includes all scopes`() {
         props.add("permKey", "permVal", PropertyScope.PERMANENT)
         props.add("procKey", "procVal", PropertyScope.PROCESS)
         props.add("sessKey", "sessVal", PropertyScope.USER_SESSION)
@@ -146,7 +139,7 @@ internal class EmbraceUserSessionPropertiesTest {
         val keys = destination.attributes.keys.map { it.removePrefix("emb.properties.") }
         assertTrue("permanent prop missing", keys.contains("permKey"))
         assertTrue("process prop missing", keys.contains("procKey"))
-        assertFalse("session prop should not be re-added", keys.contains("sessKey"))
+        assertTrue("session prop missing", keys.contains("sessKey"))
     }
 
     @Test
@@ -157,7 +150,7 @@ internal class EmbraceUserSessionPropertiesTest {
         props.add(KEY_VALID, VALUE_VALID, PropertyScope.USER_SESSION)
 
         // after clear, key should be gone (was moved to session scope)
-        props.onNewUserSession()
+        props.onUserSessionEnded()
         assertFalse(props.get().containsKey(KEY_VALID))
     }
 
@@ -169,7 +162,7 @@ internal class EmbraceUserSessionPropertiesTest {
         props.add(KEY_VALID, VALUE_VALID, PropertyScope.PROCESS)
 
         // after clear, key should still be present (was moved to process scope)
-        props.onNewUserSession()
+        props.onUserSessionEnded()
         assertEquals(VALUE_VALID, props.get()[KEY_VALID])
     }
 

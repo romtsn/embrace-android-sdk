@@ -6,7 +6,8 @@ import io.embrace.android.embracesdk.internal.arch.SessionPartChangeListener
 import io.embrace.android.embracesdk.internal.arch.SessionPartEndListener
 import io.embrace.android.embracesdk.internal.arch.limits.UpToLimitStrategy
 import io.embrace.android.embracesdk.internal.arch.schema.SchemaType
-import io.embrace.android.embracesdk.internal.logging.InternalErrorType
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
+import io.embrace.android.embracesdk.internal.logging.guardSdkCode
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
@@ -154,14 +155,12 @@ abstract class StateDataSource<T : Any>(
 
     private fun createSessionStateSpan(initialValue: T) {
         if (stateCaptureActive.get() && args.sessionPartId() != null) {
-            try {
+            errorHandler.guardSdkCode(SdkErrorType.SessionStateCreationFail) {
                 partStateToken.set(
                     args.destination.startSessionPartStateCapture(
                         state = stateTypeFactory(initialValue),
                     ),
                 )
-            } catch (t: Throwable) {
-                logger.trackInternalError(InternalErrorType.SessionStateCreationFail, t)
             }
         }
     }

@@ -17,12 +17,12 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import io.embrace.android.embracesdk.concurrency.runConcurrently
 import io.embrace.android.embracesdk.fakes.FakeClock
-import io.embrace.android.embracesdk.fakes.FakeInternalLogger
+import io.embrace.android.embracesdk.fakes.FakeErrorHandler
 import io.embrace.android.embracesdk.internal.arch.navigation.NavigationSignal
 import io.embrace.android.embracesdk.internal.arch.navigation.NavigationSignal.ScreenChanged
 import io.embrace.android.embracesdk.internal.arch.navigation.NavigationSignal.ScreenSourceAttached
 import io.embrace.android.embracesdk.internal.arch.navigation.getId
-import io.embrace.android.embracesdk.internal.logging.InternalErrorType
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
 import io.embrace.android.embracesdk.internal.utils.event.EventBus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -39,7 +39,7 @@ internal class NavControllerTrackerTest {
     private lateinit var eventBus: EventBus
     private lateinit var signals: MutableList<NavigationSignal>
     private lateinit var tracker: NavControllerTracker
-    private lateinit var logger: FakeInternalLogger
+    private lateinit var errorHandler: FakeErrorHandler
     private lateinit var activity: FragmentActivity
 
     private val attached get() = signals.filterIsInstance<ScreenSourceAttached>()
@@ -48,11 +48,11 @@ internal class NavControllerTrackerTest {
     @Before
     fun setUp() {
         clock = FakeClock()
-        logger = FakeInternalLogger()
+        errorHandler = FakeErrorHandler()
         signals = CopyOnWriteArrayList()
-        eventBus = EventBus(logger)
+        eventBus = EventBus(errorHandler)
         eventBus.addHandler(NavigationSignal.KEY) { signals.add(it) }
-        tracker = NavControllerTracker(eventBus, clock, logger)
+        tracker = NavControllerTracker(eventBus, clock, errorHandler)
         activity = createActivity()
     }
 
@@ -131,14 +131,37 @@ internal class NavControllerTrackerTest {
     }
 
     @Test
+    fun `destination changes are not reported after capture is disabled`() {
+        val controller = createTestNavController("foo", "bar")
+        tracker.trackNavigation(activity, controller)
+        assertEquals(listOf("foo"), screenChanges.map { it.name })
+
+        tracker.onDataCaptureDisabled()
+        controller.navigate("bar")
+        assertEquals(listOf("foo"), screenChanges.map { it.name })
+
+        tracker.onDataCaptureEnabled()
+        controller.navigate("foo")
+        assertEquals(listOf("foo", "foo"), screenChanges.map { it.name })
+    }
+
+    @Test
+    fun `tracking is ignored after capture is disabled`() {
+        tracker.onDataCaptureDisabled()
+        tracker.trackNavigation(activity)
+        tracker.trackNavigation(activity, createTestNavController())
+        assertTrue(signals.isEmpty())
+    }
+
+    @Test
     fun `error during tracking is logged and does not crash`() {
-        val errorLogger = FakeInternalLogger(throwOnInternalError = false)
+        val errorLogger = FakeErrorHandler(throwOnSdkError = false)
         tracker = NavControllerTracker(eventBus, clock, errorLogger)
         tracker.trackNavigation(buildActivity(BrokenNavActivity::class.java).setup().get())
         assertTrue(signals.isEmpty())
         assertTrue(
-            errorLogger.internalErrorMessages.any {
-                it.msg == InternalErrorType.NavControllerTrackingFail.toString()
+            errorLogger.sdkErrorMessages.any {
+                it.msg == SdkErrorType.NavControllerTrackingFail.toString()
             },
         )
     }
@@ -159,7 +182,7 @@ internal class NavControllerTrackerTest {
             }
         }
 
-        assertTrue(logger.internalErrorMessages.isEmpty())
+        assertTrue(errorHandler.sdkErrorMessages.isEmpty())
         pairs.forEach { (roundActivity, _) ->
             assertEquals(1, attached.count { it.instanceId == roundActivity.getId() })
             assertEquals(1, screenChanges.count { it.instanceId == roundActivity.getId() })
@@ -209,11 +232,16 @@ internal class NavControllerTrackerTest {
         }
     }
 
-    private fun createTestNavController(startDestination: String = "home"): NavController =
+    private fun createTestNavController(
+        startDestination: String = "home",
+        vararg otherDestinations: String,
+    ): NavController =
         TestNavHostController(ApplicationProvider.getApplicationContext()).apply {
             val graphNavigator = navigatorProvider.getNavigator(NavGraphNavigator::class.java)
             graph = graphNavigator.createDestination().apply {
-                addDestination(NavDestination("testNavDestination").apply { route = startDestination })
+                (listOf(startDestination) + otherDestinations).forEach { destination ->
+                    addDestination(NavDestination("testNavDestination").apply { route = destination })
+                }
                 setStartDestination(startDestination)
             }
         }

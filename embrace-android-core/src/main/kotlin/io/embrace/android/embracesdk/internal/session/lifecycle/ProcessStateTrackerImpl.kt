@@ -3,8 +3,10 @@ package io.embrace.android.embracesdk.internal.session.lifecycle
 import io.embrace.android.embracesdk.internal.arch.state.ProcessState
 import io.embrace.android.embracesdk.internal.arch.state.ProcessStateListener
 import io.embrace.android.embracesdk.internal.arch.state.ProcessStateTracker
-import io.embrace.android.embracesdk.internal.logging.InternalErrorType
-import io.embrace.android.embracesdk.internal.logging.InternalLogger
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
+import io.embrace.android.embracesdk.internal.logging.guardSdkCode
+import io.embrace.android.embracesdk.internal.logging.guardSdkCodeEach
 import io.embrace.android.embracesdk.internal.session.orchestrator.SessionOrchestrator
 import java.util.concurrent.CopyOnWriteArrayList
 
@@ -12,7 +14,7 @@ import java.util.concurrent.CopyOnWriteArrayList
  * Notifies the rest of the SDK whenever the app's process state changes.
  */
 internal class ProcessStateTrackerImpl(
-    private val logger: InternalLogger,
+    private val errorHandler: ErrorHandler,
     private val lifecycleTracker: LifecycleTracker,
 ) : ProcessStateTracker, ProcessStateListener {
 
@@ -23,11 +25,7 @@ internal class ProcessStateTrackerImpl(
 
     private var sessionOrchestrator: SessionOrchestrator? = null
 
-    /**
-     * Starts tracking process state. Must be called exactly once, immediately after construction -
-     * transitions that happen before this are not observed.
-     */
-    fun register() {
+    override fun register() {
         lifecycleTracker.register(this)
     }
 
@@ -35,34 +33,16 @@ internal class ProcessStateTrackerImpl(
      * Called by [lifecycleTracker] when the app process has entered the foreground.
      */
     override fun onForeground() {
-        invokeCallbackSafely { sessionOrchestrator?.onForeground() }
-
-        listeners.toList().forEach { listener: ProcessStateListener ->
-            invokeCallbackSafely {
-                listener.onForeground()
-            }
-        }
+        errorHandler.guardSdkCode(SdkErrorType.AppStateCallbackFail) { sessionOrchestrator?.onForeground() }
+        errorHandler.guardSdkCodeEach(SdkErrorType.AppStateCallbackFail, listeners.toList(), ProcessStateListener::onForeground)
     }
 
     /**
      * Called by [lifecycleTracker] when the app process has entered the background.
      */
     override fun onBackground() {
-        listeners.toList().forEach { listener: ProcessStateListener ->
-            invokeCallbackSafely {
-                listener.onBackground()
-            }
-        }
-
-        invokeCallbackSafely { sessionOrchestrator?.onBackground() }
-    }
-
-    private inline fun invokeCallbackSafely(action: () -> Unit) {
-        try {
-            action()
-        } catch (ex: Exception) {
-            logger.trackInternalError(InternalErrorType.AppStateCallbackFail, ex)
-        }
+        errorHandler.guardSdkCodeEach(SdkErrorType.AppStateCallbackFail, listeners.toList(), ProcessStateListener::onBackground)
+        errorHandler.guardSdkCode(SdkErrorType.AppStateCallbackFail) { sessionOrchestrator?.onBackground() }
     }
 
     override fun addListener(listener: ProcessStateListener) {
@@ -75,7 +55,7 @@ internal class ProcessStateTrackerImpl(
     override fun getAppState(): ProcessState = lifecycleTracker.getProcessState()
 
     override fun close() {
-        runCatching { lifecycleTracker.close() }
+        errorHandler.guardSdkCode(SdkErrorType.ResourceCloseFail) { lifecycleTracker.close() }
         listeners.clear()
         sessionOrchestrator = null
     }

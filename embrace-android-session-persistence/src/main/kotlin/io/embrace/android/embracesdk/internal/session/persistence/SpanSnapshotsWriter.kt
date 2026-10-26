@@ -1,7 +1,8 @@
 package io.embrace.android.embracesdk.internal.session.persistence
 
-import io.embrace.android.embracesdk.internal.logging.InternalErrorType
-import io.embrace.android.embracesdk.internal.logging.InternalLogger
+import io.embrace.android.embracesdk.internal.logging.ErrorHandler
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
+import io.embrace.android.embracesdk.internal.logging.guardSdkCode
 import io.embrace.android.embracesdk.internal.payload.Span
 import io.embrace.android.embracesdk.internal.utils.SystemTrace
 import java.io.File
@@ -26,7 +27,7 @@ import java.io.IOException
  */
 class SpanSnapshotsWriter(
     private val target: SessionPartWriteTarget,
-    private val logger: InternalLogger,
+    private val errorHandler: ErrorHandler,
     private val maxBytes: Long = MAX_PART_FILE_BYTES,
     private val maxRecordBytes: Long = MAX_RECORD_BYTES,
     private val maxRecords: Int = MAX_PERSISTED_SPANS,
@@ -41,12 +42,7 @@ class SpanSnapshotsWriter(
      * Writes the state of all in-flight spans, discarding any previous persisted info.
      */
     fun write(spans: List<Span>): Boolean = SystemTrace.trace("mf-write-span-snapshots") {
-        try {
-            writeImpl(spans)
-        } catch (exc: Throwable) {
-            trackFailure(exc)
-            false
-        }
+        errorHandler.guardSdkCode(SdkErrorType.SpanSnapshotsWriteFail, false) { writeImpl(spans) }
     }
 
     /**
@@ -131,11 +127,7 @@ class SpanSnapshotsWriter(
         val open = file ?: return
         file = null
         records = 0
-        try {
-            open.close()
-        } catch (exc: IOException) {
-            trackFailure(exc)
-        }
+        errorHandler.guardSdkCode(SdkErrorType.SpanSnapshotsWriteFail, open::close)
     }
 
     private fun reportDrop() {
@@ -146,6 +138,6 @@ class SpanSnapshotsWriter(
     }
 
     private fun trackFailure(exc: Throwable) {
-        logger.trackInternalError(InternalErrorType.SpanSnapshotsWriteFail, exc)
+        errorHandler.trackSdkError(SdkErrorType.SpanSnapshotsWriteFail, exc)
     }
 }
