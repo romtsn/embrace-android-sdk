@@ -2,6 +2,7 @@ package io.embrace.android.embracesdk.internal.instrumentation.network
 
 import io.embrace.android.embracesdk.fakes.FakeClock
 import io.embrace.android.embracesdk.fakes.FakeConfigService
+import io.embrace.android.embracesdk.fakes.FakeErrorHandler
 import io.embrace.android.embracesdk.fakes.FakeInstrumentationArgs
 import io.embrace.android.embracesdk.fakes.FakeInternalTelemetryService
 import io.embrace.android.embracesdk.fakes.FakeTelemetryDestination
@@ -10,6 +11,7 @@ import io.embrace.android.embracesdk.fakes.createNetworkBehavior
 import io.embrace.android.embracesdk.internal.arch.schema.SchemaType
 import io.embrace.android.embracesdk.internal.config.remote.NetworkCaptureRuleRemoteConfig
 import io.embrace.android.embracesdk.internal.config.remote.RemoteConfig
+import io.embrace.android.embracesdk.internal.logging.SdkErrorType
 import io.embrace.android.embracesdk.internal.telemetry.AppliedLimitType
 import io.embrace.android.embracesdk.semconv.EmbNetworkCapturedRequestAttributes
 import io.opentelemetry.kotlin.semconv.UrlAttributes
@@ -142,9 +144,7 @@ internal class NetworkCaptureDataSourceTest {
 
         val result = service.getNetworkCaptureRules("https://embrace.io/changelog", "GET")
         assertEquals(1, result.size)
-        args.store.editAndCommit {
-            putInt(NetworkCaptureDataSourceImpl.NETWORK_CAPTURE_RULE_PREFIX_KEY + rule.id, 0)
-        }
+        args.networkCaptureRuleStore.counts[rule.id] = 0
         val emptyRule = service.getNetworkCaptureRules("https://embrace.io/changelog", "GET")
         assertEquals(0, emptyRule.size)
     }
@@ -154,9 +154,7 @@ internal class NetworkCaptureDataSourceTest {
         val rule = getDefaultRule()
         cfg = RemoteConfig(networkCaptureRules = setOf(rule))
         val service = getService()
-        args.store.editAndCommit {
-            putInt(NetworkCaptureDataSourceImpl.NETWORK_CAPTURE_RULE_PREFIX_KEY + rule.id, 0)
-        }
+        args.networkCaptureRuleStore.counts[rule.id] = 0
         val emptyRule = service.getNetworkCaptureRules("https://embrace.io/changelog", "GET")
         assertEquals(0, emptyRule.size)
     }
@@ -331,6 +329,30 @@ internal class NetworkCaptureDataSourceTest {
     }
 
     @Test
+    fun `encryption failure tracks an sdk error and logs nothing`() {
+        configService = FakeConfigService(
+            networkBehavior = FakeNetworkBehavior(
+                rules = setOf(getDefaultRule()),
+                captureBodyEncryptionEnabled = true,
+                publicKey = "12345",
+            ),
+        )
+        val errorHandler = FakeErrorHandler(throwOnSdkError = false)
+        args = FakeInstrumentationArgs(
+            configService = configService,
+            errorHandler = errorHandler,
+        )
+        destination = args.destination
+
+        NetworkCaptureDataSourceImpl(args, jvmEncryptionManager()).recordNetworkRequest(
+            fakeRequest("https://embrace.io/changelog"),
+        )
+
+        assertEquals(0, destination.logEvents.size)
+        assertEquals(SdkErrorType.NetworkCaptureEncryptFail.toString(), errorHandler.sdkErrorMessages.single().msg)
+    }
+
+    @Test
     fun `test telemetry tracked when network body is truncated`() {
         cfg = RemoteConfig(networkCaptureRules = setOf(getDefaultRule(maxSize = 2)))
         val telemetryService = FakeInternalTelemetryService()
@@ -390,9 +412,9 @@ internal class NetworkCaptureDataSourceTest {
         assertEquals(firstRule.urlRegex, attrs[UrlAttributes.URL_FULL])
         assertEquals(
             firstRule.maxCount - 1,
-            args.store.getInt(NetworkCaptureDataSourceImpl.NETWORK_CAPTURE_RULE_PREFIX_KEY + firstRule.id),
+            args.networkCaptureRuleStore.counts[firstRule.id],
         )
-        assertNull(args.store.getInt(NetworkCaptureDataSourceImpl.NETWORK_CAPTURE_RULE_PREFIX_KEY + secondRule.id))
+        assertNull(args.networkCaptureRuleStore.counts[secondRule.id])
     }
 
     @Test

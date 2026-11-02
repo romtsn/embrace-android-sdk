@@ -4,8 +4,9 @@ package io.embrace.android.embracesdk.internal.logging
  * Handles errors for all code in the SDK. It achieves this by wrapping operations in try-catch. If [Throwable] is thrown unexpectedly
  * then for SDK code [guardSdkCode] will report internal diagnostics, and for user-supplied code [guardUserCode] will log a warning.
  *
- * A fixed number of SDK errors are sent per session part. This class buffers errors that happen during SDK init for delivery if the
- * SDK successfully initializes. Once the SDK is disabled, no SDK errors are reported.
+ * A fixed number of unique SDK errors are sent per session part. An error that repeats one already sent in the part is dropped
+ * and doesn't use the limit. This class buffers errors that happen during SDK init for delivery if the SDK successfully initializes.
+ * Once the SDK is disabled, no SDK errors are reported.
  */
 interface ErrorHandler : AutoCloseable {
 
@@ -25,13 +26,13 @@ interface ErrorHandler : AutoCloseable {
     fun trackSdkError(type: SdkErrorType, throwable: Throwable)
 
     /**
-     * Drains buffered errors to [sink] (throwable, timestampMs) on an SDK state transition. Errors captured after that go to
+     * Drains buffered errors to [sink] (type, throwable, timestampMs) on an SDK state transition. Errors captured after that go to
      * [sink] directly. A null [sink] closes this object completely.
      */
     fun drain(sink: ErrorRecorder?)
 
     /**
-     * Resets the limit on how many errors are sent.
+     * Resets the limit on how many errors are sent and which errors count as repeats.
      */
     fun resetLimit()
 }
@@ -82,6 +83,6 @@ inline fun <T> ErrorHandler.guardUserCode(action: () -> T): T = try {
 class UserCodeException(override val cause: Throwable) : RuntimeException(cause)
 
 /**
- * Signature for a function that records a [Throwable] as an SDK error at the given timestamp [Long]
+ * Signature for a function that records a [Throwable] as an SDK error of the given [SdkErrorType] at the given timestamp [Long]
  */
-typealias ErrorRecorder = (Throwable, Long) -> Unit
+typealias ErrorRecorder = (SdkErrorType, Throwable, Long) -> Unit

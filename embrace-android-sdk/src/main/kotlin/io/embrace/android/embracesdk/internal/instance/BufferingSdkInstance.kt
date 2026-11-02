@@ -2,11 +2,10 @@
 
 package io.embrace.android.embracesdk.internal.instance
 
+import android.content.Context
 import io.embrace.android.embracesdk.experiments.TrackedEntry
 import io.embrace.android.embracesdk.experiments.TrackedExperiment
 import io.embrace.android.embracesdk.experiments.TrackedFeatureFlag
-import io.embrace.android.embracesdk.internal.InternalInterfaceApi
-import io.embrace.android.embracesdk.internal.NoopInternalInterfaceApi
 import io.embrace.android.embracesdk.internal.api.ExperimentApi
 import io.embrace.android.embracesdk.internal.api.OTelApi
 import io.embrace.android.embracesdk.internal.api.SdkApi
@@ -40,14 +39,15 @@ import java.util.concurrent.TimeUnit
  * An [SdkApi] implementation for use before the SDK has started. Calls whose effect can be applied later are buffered
  * so they can be drained into the started SDK.
  *
- * Once a group is drained subsequent calls in that group are forwarded straight to the real SDK instance.
+ * Once a group is drained subsequent calls in that group are forwarded straight to the real SDK instance. That covers a
+ * call from a thread that picked up this buffer just before the SDK transitioned away from it, which must not be lost.
+ * Closing, when the SDK fails or is disabled, drops every later call instead, whether or not its group was drained.
  */
 internal class BufferingSdkInstance(
     private val clock: Clock,
     private val errorHandler: ErrorHandler = ErrorHandlerImpl(clock),
 ) : SdkInstance,
-    SdkApi by NoopSdkInstance(clock, errorHandler, NoopSdkInstance.SDK_NOT_INITIALIZED),
-    InternalInterfaceApi by NoopInternalInterfaceApi {
+    InternalSdkApi by NoopSdkInstance(clock, errorHandler, NoopSdkInstance.SDK_NOT_INITIALIZED) {
 
     private val otelConfigCalls = CallBuffer<OTelApi, OTelConfigCall>()
     private val completedSpanCalls = CallBuffer<TracingApi, CompletedSpanCall>()
@@ -108,7 +108,7 @@ internal class BufferingSdkInstance(
         errorHandler.drain(
             destination?.let {
                 {
-                        throwable: Throwable, timestampMs: Long ->
+                        _: SdkErrorType, throwable: Throwable, timestampMs: Long ->
                     it.addLog(
                         schemaType = SdkError(throwable),
                         severity = LogSeverity.ERROR,
@@ -121,7 +121,14 @@ internal class BufferingSdkInstance(
         )
     }
 
-    override fun onPostStart(buffer: BufferingSdkInstance) {}
+    override fun enable(context: Context) {}
+
+    override fun onEnabled() {}
+
+    override fun onTransition(buffer: BufferingSdkInstance) {}
+
+    // nothing is persisted, so there is nothing to delete beyond what closing discards
+    override fun disable() = close()
 
     override fun close() {
         closed = true
@@ -378,6 +385,9 @@ internal class BufferingSdkInstance(
             }
         }
 
+        /**
+         * Discards the buffered calls, after which calls are dropped rather than buffered or forwarded.
+         */
         override fun close() {
             synchronized(lock) {
                 closed = true

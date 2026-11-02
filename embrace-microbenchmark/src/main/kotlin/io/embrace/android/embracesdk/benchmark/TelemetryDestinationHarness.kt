@@ -49,7 +49,7 @@ internal class TelemetryDestinationHarness(
     )
     private val openTelemetryClock = EmbClock(initServices.clock)
 
-    val logSink: LogSink = LogSinkImpl()
+    val logSink: LogSink = LogSinkImpl(initServices.errorHandler)
     val spanRepository: SpanRepository = SpanRepository(initServices.errorHandler)
 
     private val otelSdkWrapper: OtelSdkWrapper by lazy {
@@ -77,6 +77,7 @@ internal class TelemetryDestinationHarness(
     val currentSessionPartSpan: CurrentSessionPartSpan = createCurrentSessionPartSpan(
         openTelemetryClock = openTelemetryClock,
         telemetryService = initServices.telemetryService,
+        errorHandler = initServices.errorHandler,
         spanRepository = spanRepository,
         tracerSupplier = { otelSdkWrapper.sdkTracer },
         openTelemetrySupplier = { otelSdkWrapper.openTelemetryKotlin },

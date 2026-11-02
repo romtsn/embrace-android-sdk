@@ -79,6 +79,9 @@ class SessionPartWriterImpl(
     private var processTerminating = false
 
     @Volatile
+    private var closed = false
+
+    @Volatile
     private var resourceListenerRegistered = false
 
     private val bufferLock = Any()
@@ -129,7 +132,15 @@ class SessionPartWriterImpl(
         }
         EmbTrace.trace("mf-part-ended") {
             val writers = synchronized(bufferLock) {
-                val ref = current ?: return
+                val ref = current ?: run {
+                    if (!closed) {
+                        errorHandler.trackSdkError(
+                            SdkErrorType.SessionPartEndUnexpected,
+                            IllegalStateException("Session part ended with no current part"),
+                        )
+                    }
+                    return
+                }
                 if (ref.directory.sessionPartId != sessionPartId) {
                     reportMissedEnd("Session part ended after another had started")
                     return
@@ -222,6 +233,7 @@ class SessionPartWriterImpl(
     }
 
     override fun close() {
+        closed = true
         val writers = synchronized(bufferLock) { current.also { current = null } } ?: return
         writers.flushPendingWrites()
         if (!processTerminating) {
@@ -280,6 +292,21 @@ class SessionPartWriterImpl(
             } else {
                 carriedOverSpans.add(span)
             }
+        }
+    }
+
+    /**
+     * Handles [spans] that were queued on a part that sealed before they could be written. In this
+     * scenario they are written to the current part straight away or are held if no part is active.
+     */
+    internal fun redirect(spans: List<Span>) {
+        val writers = current ?: synchronized(bufferLock) {
+            current ?: return carryOver(spans)
+        }
+        val (sessionSpans, others) = spans.partition { it.hasEmbraceAttribute(EmbType.Ux.Session) }
+        sessionSpans.forEach { reportOrphanedSessionSpan() }
+        if (others.isNotEmpty()) {
+            writers.completedSpans.write(others)
         }
     }
 
@@ -410,8 +437,7 @@ class SessionPartWriterImpl(
         private fun writeCompletedSpans(spans: List<Span>) {
             when {
                 spans.isEmpty() -> Unit
-                // the part sealed while this write was queued. Hold the spans for the next one
-                sealed -> synchronized(bufferLock) { carryOver(spans) }
+                sealed -> redirect(spans)
                 else -> completedSpans.write(spans)
             }
         }

@@ -29,7 +29,6 @@ import java.io.InputStream
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 import java.util.zip.GZIPInputStream
-import java.util.zip.ZipException
 
 internal class PayloadResurrectionServiceImpl(
     private val intakeService: IntakeService,
@@ -294,6 +293,7 @@ internal class PayloadResurrectionServiceImpl(
                         onNativeCrashProcessed = postNativeCrashProcessingCallback,
                         userSessionTerminationReason = userSessionTerminationReason,
                         isBackgroundOnly = isBackgroundOnly,
+                        lastWrittenMs = timestamp,
                     ) ?: throw IllegalArgumentException(
                         "Session resurrection failed. Payload does not contain exactly one session part span.",
                     )
@@ -315,8 +315,9 @@ internal class PayloadResurrectionServiceImpl(
     }
 
     /**
-     * Opens the cached payload for reading, or returns null if it is not on disk or does not hold
-     * gzipped data. Throws [IOException] if the file is larger than [maxPayloadBytes].
+     * Opens the cached payload for reading, or returns null if it is not on disk. Throws [IOException] if
+     * the file is larger than [maxPayloadBytes] or does not hold a valid gzip header, so that callers track
+     * the corrupt payload as [SdkErrorType.PayloadResurrectionPayloadFail].
      */
     private fun StoredTelemetryMetadata.loadDecompressedPayload(): InputStream? {
         if (cacheStorageService.payloadSizeBytes(this) > maxPayloadBytes) {
@@ -325,8 +326,9 @@ internal class PayloadResurrectionServiceImpl(
         return cacheStorageService.loadPayloadAsStream(this)?.let {
             try {
                 GZIPInputStream(it)
-            } catch (_: ZipException) {
-                null
+            } catch (exc: IOException) {
+                it.close()
+                throw exc
             }
         }
     }

@@ -96,6 +96,7 @@ import io.embrace.android.embracesdk.internal.store.KeyValueStore
 import io.embrace.android.embracesdk.internal.store.Ordinal
 import io.embrace.android.embracesdk.internal.store.OrdinalStore
 import io.embrace.android.embracesdk.internal.store.OrdinalStoreImpl
+import io.embrace.android.embracesdk.internal.store.PersistedSdkStateStore
 import io.embrace.android.embracesdk.internal.utils.BuildVersionChecker
 import io.embrace.android.embracesdk.internal.utils.EmbTrace
 import io.embrace.android.embracesdk.internal.utils.event.EventBus
@@ -174,7 +175,7 @@ internal fun createRealSdkInstance(
         overrides?.spanRepository.resolve { SpanRepository(errorHandler) }
     }
 
-    val logSink = init("log-sink") { LogSinkImpl() }
+    val logSink = init("log-sink") { LogSinkImpl(errorHandler) }
 
     val otelSdkConfig = lazy {
         EmbTrace.trace("otel-sdk-config-init") {
@@ -220,6 +221,7 @@ internal fun createRealSdkInstance(
         createCurrentSessionPartSpan(
             openTelemetryClock = openTelemetryClock,
             telemetryService = telemetryService,
+            errorHandler = errorHandler,
             spanRepository = spanRepository,
             tracerSupplier = { otelSdkWrapper.value.sdkTracer },
             openTelemetrySupplier = { otelSdkWrapper.value.openTelemetryKotlin },
@@ -264,9 +266,10 @@ internal fun createRealSdkInstance(
     }
 
     val store: KeyValueStore by configLoadServices.keyValueStore
+    val persistedSdkStateStore: PersistedSdkStateStore by configLoadServices.persistedSdkStateStore
 
     val ordinalStore: OrdinalStore by lazy {
-        EmbTrace.trace("ordinal-store-init") { OrdinalStoreImpl(store) }
+        EmbTrace.trace("ordinal-store-init") { OrdinalStoreImpl(store, errorHandler) }
     }
 
     val eventBus: EventBus by lazy {
@@ -286,13 +289,13 @@ internal fun createRealSdkInstance(
         createProcessStateTracker(
             errorHandler = errorHandler,
             lifecycleTracker = overrides?.lifecycleTracker.resolve {
-                createLifecycleTracker(configService, appContext as Application, context)
+                createLifecycleTracker(configService, appContext as Application, context, errorHandler)
             },
         )
     }
 
     val navigationTrackingService = init("navigation-tracking-service") {
-        createNavigationTrackingService()
+        createNavigationTrackingService(errorHandler)
     }
 
     val networkConnectivityService = init("network-connectivity-service") {
@@ -325,7 +328,7 @@ internal fun createRealSdkInstance(
 
     userSessionPropertiesService = init("user-session-properties-service") {
         createUserSessionPropertiesService(
-            store = lazy { store },
+            stateStore = configLoadServices.persistedSdkStateStore,
             configService = configService,
             destination = telemetryDestination,
             telemetryService = telemetryService,
@@ -334,7 +337,7 @@ internal fun createRealSdkInstance(
 
     userService = lazy {
         EmbTrace.trace("user-service-init") {
-            createUserService(store, clock, errorHandler)
+            createUserService(persistedSdkStateStore, clock, errorHandler)
         }
     }
 
@@ -393,6 +396,7 @@ internal fun createRealSdkInstance(
     val crashMarker = init("crash-marker") {
         CrashFileMarkerImpl(
             lazy { storageService.getFileForWrite(CrashFileMarkerImpl.CRASH_MARKER_FILE_NAME) },
+            errorHandler,
         )
     }
 
@@ -589,12 +593,13 @@ internal fun createRealSdkInstance(
                 configService = configService,
                 store = store,
                 worker = workerThreadPool.backgroundWorker(Worker.Background.NonIoRegWorker),
+                errorHandler = errorHandler,
             )
         }
     }
 
     val hostedSdkVersionInfo = init("hosted-sdk-version-info") {
-        createHostedSdkVersionInfo(configService.appFramework, store)
+        createHostedSdkVersionInfo(configService.appFramework, store, errorHandler)
     }
 
     val resourceSource = init(name = "resource-source", recordDuration = true) {
@@ -639,10 +644,8 @@ internal fun createRealSdkInstance(
 
     val metadataService = init("metadata-service") {
         createMetadataService(
-            resourceSource = resourceSource,
             context = appContext,
             configService = configService,
-            store = store,
             clock = clock,
             worker = workerThreadPool.backgroundWorker(Worker.Background.NonIoRegWorker),
         )
@@ -691,6 +694,7 @@ internal fun createRealSdkInstance(
             configService,
             logLimitingService,
             telemetryService,
+            errorHandler,
         )
     }
 
@@ -747,6 +751,7 @@ internal fun createRealSdkInstance(
                 logLimitingService = logLimitingService,
                 ordinalStore = ordinalStore,
                 store = store,
+                stateStore = persistedSdkStateStore,
                 backgroundWorker = workerThreadPool.backgroundWorker(Worker.Background.NonIoRegWorker),
                 sessionPersistenceWorker = workerThreadPool.backgroundWorker(Worker.Background.SessionPersistenceWorker),
                 sessionReadWorker = workerThreadPool.backgroundWorker(Worker.Background.IoRegWorker),

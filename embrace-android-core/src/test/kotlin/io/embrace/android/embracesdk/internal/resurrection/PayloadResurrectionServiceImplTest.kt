@@ -63,12 +63,14 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import java.io.ByteArrayInputStream
+import java.io.EOFException
 import java.io.InputStream
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.zip.GZIPInputStream
+import java.util.zip.ZipException
 
 class PayloadResurrectionServiceImplTest {
 
@@ -157,42 +159,22 @@ class PayloadResurrectionServiceImplTest {
     }
 
     @Test
-    fun `dead session end time from completed span`() {
-        val startTimeMs = checkNotNull(deadSessionEnvelope.getSessionPartSpan()?.startTimeNanos).nanosToMillis()
-        val max = startTimeMs + 20000L
+    fun `dead session ends when its snapshot was stored, after the last span activity in it`() {
+        val startTimeMs = deadSessionEnvelope.getStartTime()
+        val storedMs = startTimeMs + 30_000L
         val envelope = deadSessionEnvelope.copy(
             data = deadSessionEnvelope.data.copy(
                 spans = listOf(
-                    Span(endTimeNanos = max.millisToNanos()),
-                    Span(endTimeNanos = (startTimeMs + 10000).millisToNanos()),
-                    Span(endTimeNanos = (startTimeMs + 7000).millisToNanos()),
+                    Span(endTimeNanos = (startTimeMs + 20_000L).millisToNanos()),
+                ),
+                spanSnapshots = deadSessionEnvelope.data.spanSnapshots?.plus(
+                    Span(startTimeNanos = (startTimeMs + 10_000L).millisToNanos()),
                 ),
             ),
         )
-        envelope.resurrectPayload()
+        envelope.resurrectPayload(metadata = sessionMetadata.copy(timestamp = storedMs))
         val sessionEnvelope = getStoredParts().single()
-        assertEquals(max, sessionEnvelope.getSessionPartSpan()?.endTimeNanos?.nanosToMillis())
-    }
-
-    @Test
-    fun `dead session end time from snapshots due to no completed spans`() {
-        val startTimeMs = deadSessionEnvelope.getStartTime()
-        val max = startTimeMs + 10000
-        val spanSnapshots = deadSessionEnvelope.data.spanSnapshots?.plus(
-            listOf(
-                Span(startTimeNanos = max.millisToNanos()),
-                Span(startTimeNanos = (startTimeMs + 8000).millisToNanos()),
-                Span(startTimeNanos = (startTimeMs + 7000).millisToNanos()),
-            ),
-        )
-        val envelope = deadSessionEnvelope.copy(
-            data = deadSessionEnvelope.data.copy(
-                spanSnapshots = spanSnapshots,
-            ),
-        )
-        envelope.resurrectPayload()
-        val sessionEnvelope = getStoredParts().single()
-        assertEquals(max.millisToNanos(), sessionEnvelope.getSessionPartSpan()?.endTimeNanos)
+        assertEquals(storedMs, sessionEnvelope.getSessionPartSpan()?.endTimeNanos?.nanosToMillis())
     }
 
     @Test
@@ -539,16 +521,27 @@ class PayloadResurrectionServiceImplTest {
     }
 
     @Test
-    fun `session payload skipped without error when gzip stream is invalid`() {
-        cacheStorageService.addFakePayload(sessionMetadata)
-        val service = serviceWithPayloadStream("hi there".byteInputStream())
+    fun `session payload skipped and tracked and stream closed when gzip header is bad or truncated`() {
+        val badHeaders = listOf(
+            "hi there".toByteArray() to ZipException::class,
+            // the gzip magic and compression method, then EOF before the rest of the header
+            byteArrayOf(0x1f, 0x8b.toByte(), 0x08) to EOFException::class,
+        )
+        badHeaders.forEachIndexed { index, (bytes, expectedType) ->
+            cacheStorageService.addFakePayload(sessionMetadata)
+            val stream = CloseTrackingInputStream(bytes)
+            val service = serviceWithPayloadStream(stream)
 
-        service.resurrectOldPayloads(nativeCrashServiceProvider = { nativeCrashService })
+            service.resurrectOldPayloads(nativeCrashServiceProvider = { nativeCrashService })
 
-        assertEquals(0, payloadStorageService.storedPayloadCount())
-        assertEquals(0, cacheStorageService.storedPayloadCount())
-        assertEquals(1, cacheStorageService.deleteCount.get())
-        assertTrue(errorHandler.sdkErrorMessages.isEmpty())
+            assertEquals(0, payloadStorageService.storedPayloadCount())
+            assertEquals(0, cacheStorageService.storedPayloadCount())
+            assertEquals(index + 1, cacheStorageService.deleteCount.get())
+            val error = errorHandler.sdkErrorMessages[index]
+            assertEquals(SdkErrorType.PayloadResurrectionPayloadFail.toString(), error.msg)
+            assertTrue(expectedType.isInstance(error.throwable))
+            assertTrue(stream.closed)
+        }
     }
 
     @Test
@@ -899,9 +892,9 @@ class PayloadResurrectionServiceImplTest {
         thread.join(5000)
     }
 
-    private fun Envelope<SessionPartPayload>.resurrectPayload() {
+    private fun Envelope<SessionPartPayload>.resurrectPayload(metadata: StoredTelemetryMetadata = sessionMetadata) {
         cacheStorageService.addPayload(
-            metadata = sessionMetadata,
+            metadata = metadata,
             data = this,
         )
         resurrectInBackground()
@@ -1022,5 +1015,14 @@ class PayloadResurrectionServiceImplTest {
             complete = false,
             payloadType = PayloadType.UNKNOWN,
         )
+    }
+
+    private class CloseTrackingInputStream(bytes: ByteArray) : ByteArrayInputStream(bytes) {
+        var closed = false
+
+        override fun close() {
+            closed = true
+            super.close()
+        }
     }
 }

@@ -503,13 +503,36 @@ internal class SessionPartWriterImplTest {
     }
 
     @Test
-    fun `a session part that ends before any session part starts writes nothing`() {
+    fun `a session part that ends before any session part starts writes nothing and is reported`() {
         val writer = createWriter()
         writer.onSessionPartEnded(SESSION_PART_ID)
         drain()
 
         assertEquals(emptyList<SessionPartDirectory>(), sessionPartDirs())
         assertEquals(0, executor.submitCount)
+        assertSdkErrors("SessionPartEndUnexpected")
+    }
+
+    @Test
+    fun `a session part that ends twice is reported`() {
+        val writer = createWriter()
+        writer.onSessionPartStarted(clock.now(), USER_SESSION_ID, SESSION_PART_ID)
+        writer.onSessionPartEnded(SESSION_PART_ID)
+        drain()
+        assertNoSdkErrors()
+
+        writer.onSessionPartEnded(SESSION_PART_ID)
+        drain()
+        assertSdkErrors("SessionPartEndUnexpected")
+    }
+
+    @Test
+    fun `a session part that ends after the writer closed is not reported`() {
+        val writer = createWriter()
+        writer.onSessionPartStarted(clock.now(), USER_SESSION_ID, SESSION_PART_ID)
+        writer.close()
+        writer.onSessionPartEnded(SESSION_PART_ID)
+        drain()
         assertNoSdkErrors()
     }
 
@@ -842,6 +865,25 @@ internal class SessionPartWriterImplTest {
 
         assertEquals(listOf("network-request"), completedSpanNamesIn(OTHER_SESSION_PART_ID))
         assertNoSdkErrors()
+    }
+
+    @Test
+    fun `spans queued on a part that seals before the write runs are logged against the current part bar its session span`() {
+        val writer = createWriter()
+        writer.onSessionPartStarted(clock.now(), USER_SESSION_ID, SESSION_PART_ID)
+        drain()
+
+        val spans = mutableListOf(completedSpan("network-request"))
+        writer.onSpanCompleted(
+            RacingSpanList(spans) {
+                spans += currentSessionPartSpan.endSession(startNewSession = true)
+                writer.onSessionPartEnded(SESSION_PART_ID)
+                clock.tick(1000)
+                writer.onSessionPartStarted(clock.now(), USER_SESSION_ID, OTHER_SESSION_PART_ID)
+            },
+        )
+        assertEquals(listOf("network-request"), completedSpanNamesIn(OTHER_SESSION_PART_ID))
+        assertSdkErrors("OrphanedSessionSpan")
     }
 
     @Test
@@ -1631,6 +1673,27 @@ internal class SessionPartWriterImplTest {
                 onFirstSchedule()
             }
             return delegate.schedule(command, delay, unit)
+        }
+    }
+
+    private class RacingSpanList(
+        private val spans: MutableList<Span>,
+        private val onFirstIteration: () -> Unit,
+    ) : AbstractList<Span>() {
+
+        private var hooked = false
+
+        override val size: Int
+            get() = spans.size
+
+        override fun get(index: Int): Span = spans[index]
+
+        override fun iterator(): Iterator<Span> {
+            if (!hooked) {
+                hooked = true
+                onFirstIteration()
+            }
+            return super.iterator()
         }
     }
 

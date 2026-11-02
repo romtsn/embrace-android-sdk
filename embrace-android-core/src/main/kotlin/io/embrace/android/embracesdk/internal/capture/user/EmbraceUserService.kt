@@ -6,7 +6,7 @@ import io.embrace.android.embracesdk.internal.logging.SdkErrorType
 import io.embrace.android.embracesdk.internal.logging.guardSdkCode
 import io.embrace.android.embracesdk.internal.logging.guardSdkCodeEach
 import io.embrace.android.embracesdk.internal.payload.UserInfo
-import io.embrace.android.embracesdk.internal.store.KeyValueStore
+import io.embrace.android.embracesdk.internal.store.PersistedSdkStateStore
 import io.embrace.android.embracesdk.internal.utils.EmbTrace
 import io.embrace.android.embracesdk.internal.utils.Provider
 import java.util.concurrent.CopyOnWriteArraySet
@@ -14,7 +14,7 @@ import java.util.concurrent.atomic.AtomicReference
 import java.util.regex.Pattern
 
 internal class EmbraceUserService(
-    private val impl: KeyValueStore,
+    private val stateStore: PersistedSdkStateStore,
     private val clock: Clock,
     private val errorHandler: ErrorHandler,
 ) : UserService {
@@ -26,42 +26,8 @@ internal class EmbraceUserService(
     private val userInfoProvider: Provider<UserInfo> = { getStoredUserInfo() }
     private val listeners = CopyOnWriteArraySet<() -> Unit>()
 
-    private var userPayer: Boolean
-        get() = impl.getBoolean(USER_IS_PAYER_KEY, false)
-        set(value) = impl.editAndCommit { putBoolean(USER_IS_PAYER_KEY, value) }
-
-    private var userId: String?
-        get() = impl.getString(USER_IDENTIFIER_KEY)
-        set(value) = impl.editAndCommit { putString(USER_IDENTIFIER_KEY, value) }
-
-    private var userEmailAddress: String?
-        get() = impl.getString(USER_EMAIL_ADDRESS_KEY)
-        set(value) = impl.editAndCommit { putString(USER_EMAIL_ADDRESS_KEY, value) }
-
-    private var userPersonas: Set<String>?
-        get() = impl.getStringSet(USER_PERSONAS_KEY)
-        set(value) = impl.editAndCommit { putStringSet(USER_PERSONAS_KEY, value) }
-
-    private var name: String?
-        get() = impl.getString(USER_USERNAME_KEY)
-        set(value) = impl.editAndCommit { putString(USER_USERNAME_KEY, value) }
-
     private fun isUsersFirstDay(): Boolean {
-        val installDate = installDate
-        return installDate != null && clock.now() - installDate <= DAY_IN_MS
-    }
-
-    private var installDate: Long?
-        get() = impl.getLong(INSTALL_DATE_KEY)
-        set(value) = impl.editAndCommit { putLong(INSTALL_DATE_KEY, value) }
-
-    /**
-     * Persists the install date if none has been stored yet. Must be called once, straight after construction.
-     */
-    fun recordInstallDateIfAbsent() {
-        if (installDate == null) {
-            installDate = clock.now()
-        }
+        return clock.now() - stateStore.snapshot().installTimestampMs <= DAY_IN_MS
     }
 
     override fun loadUserInfoFromDisk(): UserInfo? {
@@ -76,7 +42,7 @@ internal class EmbraceUserService(
             return
         }
         modifyUserInfo(userInfo().copy(userId = userId))
-        this.userId = userId
+        stateStore.update { this.userId = userId }
     }
 
     override fun clearUserIdentifier() {
@@ -89,7 +55,7 @@ internal class EmbraceUserService(
             return
         }
         modifyUserInfo(userInfo().copy(username = username))
-        this.name = username
+        stateStore.update { userName = username }
     }
 
     override fun clearUsername() {
@@ -102,7 +68,7 @@ internal class EmbraceUserService(
             return
         }
         modifyUserInfo(userInfo().copy(email = email))
-        this.userEmailAddress = email
+        stateStore.update { userEmail = email }
     }
 
     override fun clearUserEmail() {
@@ -128,7 +94,7 @@ internal class EmbraceUserService(
 
         val newPersonas: Set<String> = userInfo().personas?.plus(persona) ?: mutableSetOf(persona)
         modifyUserInfo(userInfo().copy(personas = newPersonas))
-        this.userPersonas = newPersonas
+        stateStore.update { userPersonas = newPersonas }
     }
 
     override fun clearUserPersona(persona: String?) {
@@ -142,32 +108,44 @@ internal class EmbraceUserService(
 
         val newPersonas: Set<String> = userInfo().personas?.minus(persona) ?: mutableSetOf()
         modifyUserInfo(userInfo().copy(personas = newPersonas))
-        this.userPersonas = newPersonas
+        stateStore.update { userPersonas = newPersonas }
     }
 
     override fun clearAllUserPersonas() {
-        val currentPersonas = userInfo().personas
-        if (currentPersonas != null && currentPersonas.isEmpty()) {
-            return
-        }
-        val personas: MutableSet<String> = HashSet()
-        if (this.userPayer) {
-            personas.add(PERSONA_PAYER)
-        }
-        if (isUsersFirstDay()) {
-            personas.add(PERSONA_FIRST_DAY_USER)
-        }
+        val personas = clearedPersonas() ?: return
         modifyUserInfo(userInfo().copy(personas = personas))
-        this.userPersonas = personas
+        stateStore.update { userPersonas = personas }
     }
 
     override fun clearAllUserInfo() {
-        impl.batch {
-            clearUserIdentifier()
-            clearUserEmail()
-            clearUsername()
-            clearAllUserPersonas()
+        val personas = clearedPersonas()
+        modifyUserInfo(
+            userInfo().copy(userId = null, email = null, username = null, personas = personas ?: userInfo().personas),
+        )
+        stateStore.update {
+            userId = null
+            userEmail = null
+            userName = null
+            if (personas != null) {
+                userPersonas = personas
+            }
         }
+    }
+
+    /**
+     * Returns the SDK-derived personas that remain once every user-set persona is cleared, or null if the current
+     * personas are already empty.
+     */
+    private fun clearedPersonas(): Set<String>? {
+        val currentPersonas = userInfo().personas
+        if (currentPersonas != null && currentPersonas.isEmpty()) {
+            return null
+        }
+        val personas: MutableSet<String> = HashSet()
+        if (isUsersFirstDay()) {
+            personas.add(PERSONA_FIRST_DAY_USER)
+        }
+        return personas
     }
 
     override fun addUserInfoListener(listener: () -> Unit) {
@@ -198,21 +176,15 @@ internal class EmbraceUserService(
      */
     private fun getStoredUserInfo(): UserInfo {
         EmbTrace.trace("load-user-info-from-pref") {
-            val id = userId
-            val name = name
-            val email = userEmailAddress
+            val state = stateStore.snapshot()
             val personas: MutableSet<String> = HashSet()
-            userPersonas?.let(personas::addAll)
+            state.userPersonas?.let(personas::addAll)
 
-            personas.remove(PERSONA_PAYER)
-            if (userPayer) {
-                personas.add(PERSONA_PAYER)
-            }
             personas.remove(PERSONA_FIRST_DAY_USER)
             if (isUsersFirstDay()) {
                 personas.add(PERSONA_FIRST_DAY_USER)
             }
-            return UserInfo(id, email, name, personas)
+            return UserInfo(state.userId, state.userEmail, state.userName, personas)
         }
     }
 
@@ -230,13 +202,6 @@ internal class EmbraceUserService(
             personas = emptySet(),
         )
 
-        const val USER_IDENTIFIER_KEY = "io.embrace.userid"
-        const val USER_EMAIL_ADDRESS_KEY = "io.embrace.useremail"
-        const val USER_USERNAME_KEY = "io.embrace.username"
-        const val USER_IS_PAYER_KEY = "io.embrace.userispayer"
-        const val USER_PERSONAS_KEY = "io.embrace.userpersonas"
-        const val INSTALL_DATE_KEY = "io.embrace.installtimestamp"
-        const val PERSONA_PAYER = "payer"
         const val PERSONA_FIRST_DAY_USER = "first_day"
         const val DAY_IN_MS: Long = 60 * 60 * 24 * 1000L
     }

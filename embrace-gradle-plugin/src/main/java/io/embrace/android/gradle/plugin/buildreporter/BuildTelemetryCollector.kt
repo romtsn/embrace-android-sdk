@@ -4,9 +4,11 @@ import io.embrace.android.gradle.plugin.agp.AgpWrapper
 import io.embrace.android.gradle.plugin.config.PluginBehavior
 import io.embrace.android.gradle.plugin.gradle.GradleVersion
 import io.embrace.android.gradle.plugin.gradle.GradleVersion.Companion.isAtLeast
-import io.embrace.android.gradle.plugin.instrumentation.config.model.VariantConfig
+import io.embrace.android.gradle.plugin.network.BuildTelemetryRequest
+import io.embrace.android.gradle.plugin.network.VariantBuildTelemetry
 import io.embrace.android.gradle.plugin.system.JavaSystemWrapper
 import io.embrace.android.gradle.plugin.util.getProperty
+import io.embrace.bytecode.config.model.VariantConfig
 import io.embrace.embrace_gradle_plugin.BuildConfig
 import org.gradle.api.Project
 import org.gradle.api.provider.ListProperty
@@ -112,7 +114,7 @@ class BuildTelemetryCollector {
         }
     }
 
-    private fun Project.getJvmArgs() = getProperty(GRADLE_JVM_ARGS) ?: ""
+    private fun Project.getJvmArgs() = redactJvmArgs(getProperty(GRADLE_JVM_ARGS) ?: "")
     private fun Project.getEdmVersion() = getProperty(EMBRACE_UNITY_EDM_VERSION) ?: ""
 
     private fun getKotlinVersion(project: Project): String? {

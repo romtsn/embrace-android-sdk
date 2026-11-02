@@ -27,7 +27,7 @@ internal class OpenTelemetryFactoriesTest {
         assertNotNull(
             createOtelSdkConfig(
                 spanRepository = spanRepository,
-                logSink = LogSinkImpl(),
+                logSink = LogSinkImpl(FakeErrorHandler()),
                 instrumentedConfig = initServices.instrumentedConfig,
                 systemInfo = initServices.systemInfo,
                 uuidSource = initServices.uuidSource,
@@ -37,6 +37,7 @@ internal class OpenTelemetryFactoriesTest {
         val span = createCurrentSessionPartSpan(
             openTelemetryClock = EmbClock(initServices.clock),
             telemetryService = initServices.telemetryService,
+            errorHandler = initServices.errorHandler,
             spanRepository = spanRepository,
             tracerSupplier = { error("unused") },
             openTelemetrySupplier = { error("unused") },

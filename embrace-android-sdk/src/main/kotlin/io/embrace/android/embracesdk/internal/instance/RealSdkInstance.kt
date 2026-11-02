@@ -38,8 +38,7 @@ import io.embrace.android.embracesdk.internal.config.ConfigService
 import io.embrace.android.embracesdk.internal.delivery.caching.PayloadCachingService
 import io.embrace.android.embracesdk.internal.delivery.scheduling.SchedulingService
 import io.embrace.android.embracesdk.internal.delivery.storage.PayloadStorageService
-import io.embrace.android.embracesdk.internal.delivery.storage.StorageLocation
-import io.embrace.android.embracesdk.internal.delivery.storage.asFile
+import io.embrace.android.embracesdk.internal.delivery.storage.deletePersistedTelemetry
 import io.embrace.android.embracesdk.internal.injection.WorkerThreadPool
 import io.embrace.android.embracesdk.internal.injection.evictConnections
 import io.embrace.android.embracesdk.internal.instrumentation.crash.CrashFileMarker
@@ -76,7 +75,6 @@ import io.embrace.android.embracesdk.internal.utils.EmbTrace
 import io.embrace.android.embracesdk.internal.utils.event.EventBus
 import io.embrace.android.embracesdk.internal.worker.Worker
 import io.embrace.android.embracesdk.spans.TracingApi
-import io.opentelemetry.kotlin.NoopOpenTelemetry
 import io.opentelemetry.kotlin.OpenTelemetry
 import okhttp3.OkHttpClient
 import java.io.File
@@ -161,18 +159,14 @@ internal class RealSdkInstance(
     private var applicationInitStartMs: Long? = null
 
     @Volatile
-    private var started: Boolean = false
+    private var enabled: Boolean = false
 
     override val isStarted: Boolean
-        get() = started
+        get() = enabled
 
-    override fun getOpenTelemetryKotlin(): OpenTelemetry = if (started) {
-        otelApiDelegate.getOpenTelemetryKotlin()
-    } else {
-        NoopOpenTelemetry
-    }
+    override fun getOpenTelemetryKotlin(): OpenTelemetry = otelApiDelegate.getOpenTelemetryKotlin()
 
-    override fun onPostStart(buffer: BufferingSdkInstance) {
+    override fun onTransition(buffer: BufferingSdkInstance) {
         buffer.drainCompletedSpans(tracingApi)
         buffer.drainExperimentCalls(experimentApiDelegate, experimentApiDelegate::replay)
         // the buffered value was recorded first, so takes precedence
@@ -186,37 +180,46 @@ internal class RealSdkInstance(
         )
     }
 
-    override fun start(context: Context) {
+    override fun enable(context: Context) {
         try {
             EmbTrace.trace(sectionName = "process-state-tracker-register", recordDuration = true) {
                 processStateTracker.register()
             }
-            postInit()
+            setupServices()
 
+            // not fully initialized, but the SDK shouldn't catastrophically throw after this point,
+            // so we allow external calls.
+            enabled = true
+        } catch (exc: Throwable) {
+            Log.w("Embrace", "Failed to initialize Embrace SDK", exc)
+            errorHandler.trackSdkError(SdkErrorType.SdkInitPhaseFail, exc)
+        }
+    }
+
+    override fun onEnabled() {
+        try {
             EmbTrace.trace(sectionName = "post-services-setup", recordDuration = true) {
-                // not fully initialized, but the SDK shouldn't catastrophically throw after this point,
-                // so we allow external calls.
-                started = true
                 registerListeners()
                 loadInstrumentation()
                 postLoadInstrumentation()
                 triggerPayloadSend()
             }
             markSdkInitComplete(EmbTrace.durationTracker::flush)
-        } catch (ignored: Throwable) {
-            Log.w("Embrace", "Failed to initialize Embrace SDK", ignored)
+        } catch (exc: Throwable) {
+            Log.w("Embrace", "Failed to initialize Embrace SDK", exc)
+            errorHandler.trackSdkError(SdkErrorType.SdkInitPhaseFail, exc)
         }
     }
 
-    override fun disable() = tearDown(deleteData = true)
-    override fun close() = tearDown(deleteData = false)
+    override fun disable() = tearDown(deletePersistedTelemetry = true)
+    override fun close() = tearDown(deletePersistedTelemetry = false)
 
     /**
      * Tears down the SDK. Each step tolerates failure independently so that a failing step does not prevent
      * the remaining steps from running.
      */
-    private fun tearDown(deleteData: Boolean) {
-        started = false
+    private fun tearDown(deletePersistedTelemetry: Boolean) {
+        enabled = false
         runCatching { errorHandler.close() }
         runCatching { otelSdkConfig.value.disableDataExport() }
         runCatching { instrumentationRegistry.close() }
@@ -241,24 +244,19 @@ internal class RealSdkInstance(
         runCatching { workerThreadPool.close() }
         runCatching { eventBus.stop() }
 
-        if (!deleteData || rootDir == null || fallbackDir == null) {
+        if (!deletePersistedTelemetry || rootDir == null || fallbackDir == null) {
             return
         }
         val executor = runCatching { Executors.newSingleThreadExecutor() }.getOrNull() ?: return
         executor.execute {
             runCatching {
+                // deleted at once so that nothing is left to send if the process ends during the wait, then again once the
+                // workers have finished, as work still running can write again
+                deletePersistedTelemetry(rootDir, fallbackDir)
                 if (!workerThreadPool.awaitTermination(WORKER_TERMINATION_TIMEOUT_MS)) {
                     Log.w("[Embrace]", "Timed out waiting for Embrace workers to finish before deleting data.")
                 }
-                StorageLocation.entries.map {
-                    it.asFile(
-                        errorHandler = null,
-                        rootDirSupplier = { rootDir },
-                        fallbackDirSupplier = { fallbackDir },
-                    ).value
-                }.forEach {
-                    it.deleteRecursively()
-                }
+                deletePersistedTelemetry(rootDir, fallbackDir)
             }.onFailure { exception ->
                 Log.e("[Embrace]", "An error occurred while trying to disable Embrace SDK.", exception)
             }
@@ -281,11 +279,10 @@ internal class RealSdkInstance(
     }
 
     /**
-     * Performs bootstrapping by setting required values where there is an interdependency
-     * between modules.
+     * Wires up services that depend on each other once they have all been created, and opens the first session part.
      */
-    internal fun postInit() {
-        EmbTrace.trace(sectionName = "post-init", recordDuration = true) {
+    internal fun setupServices() {
+        EmbTrace.trace(sectionName = "setup-services", recordDuration = true) {
             payloadCachingService?.run {
                 spanRepository.addSpanChangeListener { reportBackgroundActivityStateChange() }
             }
@@ -441,7 +438,7 @@ internal class RealSdkInstance(
                 payloadStore?.let(::addCrashTeardownHandler)
             }
             workerThreadPool.backgroundWorker(Worker.Background.NonIoRegWorker).submit {
-                if (!started) {
+                if (!enabled) {
                     return@submit
                 }
                 errorHandler.guardSdkCode(SdkErrorType.SdkInitPhaseFail) {
@@ -462,7 +459,7 @@ internal class RealSdkInstance(
         errorHandler.guardSdkCode(SdkErrorType.SdkInitPhaseFail) {
             val worker = workerThreadPool.backgroundWorker(Worker.Background.IoRegWorker)
             worker.submit {
-                if (!started) {
+                if (!enabled) {
                     return@submit
                 }
                 errorHandler.guardSdkCode(SdkErrorType.PayloadResurrectionFail) {
@@ -554,7 +551,7 @@ internal class RealSdkInstance(
                 )
             }
             workerThreadPool.backgroundWorker(Worker.Background.NonIoRegWorker).submit {
-                if (started) {
+                if (enabled) {
                     startupService.recordSdkInitSpan()
                 }
             }

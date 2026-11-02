@@ -3,7 +3,7 @@ package io.embrace.android.embracesdk.internal.clock
 import android.os.SystemClock
 import io.embrace.android.embracesdk.internal.logging.ErrorHandler
 import io.embrace.android.embracesdk.internal.logging.SdkErrorType
-import java.util.concurrent.atomic.AtomicBoolean
+import io.embrace.android.embracesdk.internal.utils.concurrent.OneShot
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.max
 
@@ -22,13 +22,13 @@ class NormalizedIntervalClock(
     private val driftThresholdMs: Long = DEFAULT_DRIFT_THRESHOLD_MS,
     wallClock: () -> Long = System::currentTimeMillis,
     private val monotonicClock: () -> Long = SystemClock::elapsedRealtime,
-) : Clock {
 
     /**
      * The maximum number of CAS iterations to attempt when attempting to retrieve the current time and detect drift. We scale this
      * relative to the number of cores available on startup, this stops us locking up the CPU trying to retrieve the time.
      */
-    private val casLimit = max(Runtime.getRuntime().availableProcessors() * 2, 8)
+    private val casLimit: Int = max(Runtime.getRuntime().availableProcessors() * 2, 8),
+) : Clock {
 
     private val baseline = wallClock() - monotonicClock()
 
@@ -36,18 +36,18 @@ class NormalizedIntervalClock(
      * The lastTime that `now` was called - `Long.MIN_VALUE` as a "not yet tracked" sentinel.
      */
     private val lastTime = AtomicLong(Long.MIN_VALUE)
-    private val hasLoggedDrift = AtomicBoolean(false)
+    private val reportDriftOnce = OneShot()
+    private val reportCasExhaustedOnce = OneShot()
 
     override fun now(): Long {
-        val newTime = 0L
         repeat(casLimit) {
             val prev = lastTime.get()
             val newTime = baseline + monotonicClock()
 
             if (prev != Long.MIN_VALUE && newTime < prev - driftThresholdMs) {
-                if (hasLoggedDrift.compareAndSet(false, true)) {
+                reportDriftOnce {
                     errorHandler?.trackSdkError(
-                        SdkErrorType.InternalInterfaceFail,
+                        SdkErrorType.ClockDrift,
                         IllegalStateException(
                             "NormalizedIntervalClock drifted back in time by more than threshold. Delivery is likely out-of-order.",
                         ),
@@ -62,7 +62,13 @@ class NormalizedIntervalClock(
             }
         }
 
-        return newTime
+        reportCasExhaustedOnce {
+            errorHandler?.trackSdkError(
+                SdkErrorType.ClockCasExhausted,
+                IllegalStateException("NormalizedIntervalClock exhausted CAS attempts."),
+            )
+        }
+        return baseline + monotonicClock()
     }
 
     companion object {

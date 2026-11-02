@@ -3,8 +3,10 @@ package io.embrace.android.embracesdk.internal.capture.user
 import io.embrace.android.embracesdk.fakes.FakeClock
 import io.embrace.android.embracesdk.fakes.FakeErrorHandler
 import io.embrace.android.embracesdk.fakes.FakeKeyValueStore
+import io.embrace.android.embracesdk.fakes.TestUuidSource
 import io.embrace.android.embracesdk.internal.logging.ErrorHandler
 import io.embrace.android.embracesdk.internal.payload.UserInfo
+import io.embrace.android.embracesdk.internal.prefs.PrefsPersistedSdkStateStore
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -44,11 +46,10 @@ internal class EmbraceUserServiceTest {
             email = "test@example.com",
             name = "Mr Test",
             payer = true,
-            firstDay = true,
         )
 
         // load user info
-        service = EmbraceUserService(store, clock, errorHandler).apply { recordInstallDateIfAbsent() }
+        service = EmbraceUserService(PrefsPersistedSdkStateStore(store, clock, TestUuidSource()), clock, errorHandler)
     }
 
     @Test
@@ -123,7 +124,7 @@ internal class EmbraceUserServiceTest {
             assertNull(getUserInfo().email)
             assertNull(getUserInfo().userId)
             assertNull(getUserInfo().username)
-            assertEquals(extraPersonas, getUserInfo().personas)
+            assertEquals(setOf("first_day"), getUserInfo().personas)
         }
     }
 
@@ -160,27 +161,19 @@ internal class EmbraceUserServiceTest {
         )
     }
 
-    @Test
-    fun `test startup complete`() {
-        val timestamp = store.values()["io.embrace.installtimestamp"]
-        assertEquals(clock.now(), timestamp)
-    }
-
     private fun setUserInfo(
         id: String? = null,
         email: String? = null,
         name: String? = null,
-        payer: Boolean? = null,
-        firstDay: Boolean? = null,
+        payer: Boolean = false,
         suppliedPersonas: Set<String> = userPersonas,
     ) {
         store.editAndCommit {
             putString("io.embrace.userid", id)
             putString("io.embrace.useremail", email)
             putString("io.embrace.username", name)
-            putBoolean("io.embrace.userispayer", payer)
 
-            val personas = if (firstDay == true) {
+            val personas = if (payer) {
                 suppliedPersonas.plus("payer")
             } else {
                 suppliedPersonas

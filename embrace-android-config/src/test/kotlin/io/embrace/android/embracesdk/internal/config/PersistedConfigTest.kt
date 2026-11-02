@@ -1,9 +1,9 @@
 package io.embrace.android.embracesdk.internal.config
 
 import io.embrace.android.embracesdk.fakes.FakeClock
-import io.embrace.android.embracesdk.fakes.FakeKeyValueStore
+import io.embrace.android.embracesdk.fakes.FakeErrorHandler
+import io.embrace.android.embracesdk.fakes.FakePersistedSdkStateStore
 import io.embrace.android.embracesdk.fakes.TestPlatformSerializer
-import io.embrace.android.embracesdk.fakes.TestUuidSource
 import io.embrace.android.embracesdk.fakes.config.FakeEnabledFeatureConfig
 import io.embrace.android.embracesdk.fakes.config.FakeInstrumentedConfig
 import io.embrace.android.embracesdk.fakes.config.FakeProjectConfig
@@ -11,6 +11,7 @@ import io.embrace.android.embracesdk.internal.config.remote.OtelKotlinSdkConfig
 import io.embrace.android.embracesdk.internal.config.remote.RemoteConfig
 import io.embrace.android.embracesdk.internal.config.source.ConfigHttpResponse
 import io.embrace.android.embracesdk.internal.config.store.RemoteConfigStoreImpl
+import io.embrace.android.embracesdk.internal.store.PersistedSdkState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -27,6 +28,7 @@ internal class PersistedConfigTest {
     val temporaryFolder: TemporaryFolder = TemporaryFolder()
 
     private val serializer = TestPlatformSerializer()
+    private val errorHandler = FakeErrorHandler(throwOnSdkError = false)
 
     @Test
     fun `remote config is loaded from disk`() {
@@ -64,10 +66,9 @@ internal class PersistedConfigTest {
     }
 
     @Test
-    fun `device id sourced from key value store when not co-cached`() {
-        val store = FakeKeyValueStore().apply {
-            editAndCommit { putString("io.embrace.deviceid", "persisted-device-id") }
-        }
+    fun `device id sourced from state store when not co-cached`() {
+        val store =
+            FakePersistedSdkStateStore(PersistedSdkState(deviceId = "persisted-device-id", installTimestampMs = 0L))
         val persistedConfig = createPersistedConfig(store = lazyOf(store))
         assertEquals("persisted-device-id", persistedConfig.deviceId)
     }
@@ -123,25 +124,26 @@ internal class PersistedConfigTest {
         assertNull(persistedConfig.response)
         assertNull(persistedConfig.remoteConfig)
         assertFalse(persistedConfig.otelBehavior.shouldUseKotlinSdk())
+        assertEquals("RemoteConfigStoreFail", errorHandler.sdkErrorMessages.single().msg)
     }
 
     @Test
-    fun `key value store is not touched when the config is never read`() {
+    fun `state store is not touched when the config is never read`() {
         var resolved = false
         val store = lazy {
             resolved = true
-            FakeKeyValueStore()
+            FakePersistedSdkStateStore()
         }
         createPersistedConfig(store = store)
         assertFalse(resolved)
     }
 
     @Test
-    fun `key value store is not touched when the binary cache supplies the device id`() {
+    fun `state store is not touched when the binary cache supplies the device id`() {
         var resolved = false
         val store = lazy {
             resolved = true
-            FakeKeyValueStore()
+            FakePersistedSdkStateStore()
         }
         val persistedConfig = createPersistedConfig(
             persisted = RemoteConfig(threshold = 92),
@@ -157,7 +159,7 @@ internal class PersistedConfigTest {
         persisted: RemoteConfig? = null,
         localEnabled: Boolean = false,
         appId: String? = "abcde",
-        store: Lazy<FakeKeyValueStore> = lazyOf(FakeKeyValueStore()),
+        store: Lazy<FakePersistedSdkStateStore> = lazyOf(FakePersistedSdkStateStore()),
         cachedDeviceId: String? = null,
         filesDir: File = temporaryFolder.newFolder(),
     ): PersistedConfig {
@@ -167,6 +169,7 @@ internal class PersistedConfigTest {
                 storageDir = File(filesDir, PersistedConfig.STORAGE_DIR_NAME),
                 deviceIdProvider = { cachedDeviceId },
                 deliveredAtProvider = { 1L },
+                errorHandler = errorHandler,
             ).saveResponse(ConfigHttpResponse(persisted, "etag"))
         } else if (persisted != null) {
             val storageDir = File(filesDir, PersistedConfig.STORAGE_DIR_NAME).apply { mkdirs() }
@@ -181,9 +184,9 @@ internal class PersistedConfigTest {
                 enabledFeatures = FakeEnabledFeatureConfig(otelKotlinSdkEnabled = localEnabled),
                 project = FakeProjectConfig(appId = appId),
             ),
-            keyValueStore = store,
-            uuidSource = TestUuidSource(),
+            stateStore = store,
             clock = FakeClock(),
+            errorHandler = errorHandler,
         )
     }
 }

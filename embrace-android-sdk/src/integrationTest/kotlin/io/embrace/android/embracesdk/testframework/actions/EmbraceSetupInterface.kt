@@ -50,6 +50,7 @@ import io.embrace.android.embracesdk.internal.payload.Span
 import io.embrace.android.embracesdk.internal.prefs.createKeyValueStore
 import io.embrace.android.embracesdk.internal.serialization.PlatformSerializer
 import io.embrace.android.embracesdk.internal.session.lifecycle.AndroidxProcessLifecycleTracker
+import io.embrace.android.embracesdk.internal.session.orchestrator.SessionOrchestrator
 import io.embrace.android.embracesdk.internal.session.persistence.CompletedSpansWriter
 import io.embrace.android.embracesdk.internal.session.persistence.SessionMetadataWriter
 import io.embrace.android.embracesdk.internal.session.persistence.SessionPartDirectory
@@ -131,6 +132,11 @@ internal class EmbraceSetupInterface(
      */
     var constructionFailure: Throwable? = null
 
+    /**
+     * When set, the SDK's start throws this partway through, as the session orchestrator starts.
+     */
+    var startFailure: Throwable? = null
+
     private val fakeInitServices: TestInitServices = TestInitServices(
         clock = fakeClock,
         errorHandler = FakeErrorHandler(ignoredErrors = ignoredSdkErrors, delegate = ErrorHandlerImpl(fakeClock)),
@@ -172,7 +178,11 @@ internal class EmbraceSetupInterface(
      * graph exists.
      */
     private val keyValueStore: KeyValueStore by lazy {
-        createKeyValueStore(InMemoryPrefsContext(fakeContext), fakeInitServices.jsonSerializer)
+        createKeyValueStore(
+            InMemoryPrefsContext(fakeContext),
+            fakeInitServices.jsonSerializer,
+            fakeInitServices.errorHandler,
+        )
     }
 
     init {
@@ -207,7 +217,7 @@ internal class EmbraceSetupInterface(
         payloadStorageService = { real -> (fakePayloadStorageService ?: real()).also { services.payloadStorageService = it } },
         cacheStorageService = fakeCacheStorageService?.let { fake -> { fake } },
         payloadStorageLimit = { payloadStorageLimit },
-        lifecycleTracker = { AndroidxProcessLifecycleTracker(fakeLifecycleOwner) },
+        lifecycleTracker = { AndroidxProcessLifecycleTracker(fakeLifecycleOwner, FakeErrorHandler()) },
         networkConnectivityService = { fakeNetworkConnectivityService },
         appContext = {
             constructionFailure?.let { throw it }
@@ -220,7 +230,10 @@ internal class EmbraceSetupInterface(
         otelSdkConfig = { real -> real().also { services.otelSdkConfig = it } },
         otelSdkWrapper = { real -> real().also { services.otelSdkWrapper = it } },
         sessionIdsProvider = { real -> real().also { services.sessionIdsProvider = it } },
-        sessionOrchestrator = { real -> real().also { services.sessionOrchestrator = it } },
+        sessionOrchestrator = { real ->
+            val orchestrator = real().also { services.sessionOrchestrator = it }
+            startFailure?.let { FailingStartSessionOrchestrator(orchestrator, it) } ?: orchestrator
+        },
         experimentTrackingService = { real -> real().also { services.experimentTrackingService = it } },
         intakeService = { real -> real().also { services.intakeService = it } },
         eventBus = { real -> real().also { services.eventBus = it } },
@@ -532,6 +545,13 @@ internal class EmbraceSetupInterface(
                     threadBlockageMonitoringThread = threadBlockageWatchdogThread
                 )
             }
+    }
+
+    private class FailingStartSessionOrchestrator(
+        impl: SessionOrchestrator,
+        private val failure: Throwable,
+    ) : SessionOrchestrator by impl {
+        override fun start() = throw failure
     }
 
     private class DecoratedConfigService(private val impl: ConfigService) : ConfigService by impl {

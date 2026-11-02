@@ -4,6 +4,7 @@ package io.embrace.android.embracesdk.testcases
 
 import android.app.Activity
 import android.content.Context
+import androidx.lifecycle.testing.TestLifecycleOwner
 import androidx.test.core.app.ApplicationProvider
 import io.embrace.android.embracesdk.LastRunEndState
 import io.embrace.android.embracesdk.PropertyScope
@@ -11,6 +12,7 @@ import io.embrace.android.embracesdk.Severity
 import io.embrace.android.embracesdk.UserSessionListener
 import io.embrace.android.embracesdk.assertions.findSpanByName
 import io.embrace.android.embracesdk.assertions.returnIfConditionMet
+import io.embrace.android.embracesdk.assertions.waitUntilConditionMet
 import io.embrace.android.embracesdk.fakes.FakeErrorHandler
 import io.embrace.android.embracesdk.fakes.FakeLogRecordExporter
 import io.embrace.android.embracesdk.fakes.FakeLogRecordProcessor
@@ -42,6 +44,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -50,6 +53,7 @@ import org.junit.runner.RunWith
 import org.robolectric.ParameterizedRobolectricTestRunner
 import org.robolectric.Robolectric
 import java.io.File
+import java.util.concurrent.TimeoutException
 
 /**
  * Covers every transition of the SDK lifecycle state machine.
@@ -79,6 +83,8 @@ internal class SdkStateIntegrationTest(
         private const val TEST_SUBDIR_NAME = "emb_test_dir"
         private const val TEST_FILE_NAME = "test_file"
         private const val DUMMY_CONTENT = "Hello, world!"
+        private const val WORKER_TERMINATION_WAIT_MS = 1000L
+        private const val STORAGE_KEPT_WAIT_MS = 500
         private val STARTUP_SWEPT_DIRS = setOf(StorageLocation.SESSION_SPLIT)
         private val sdkDisabledConfig = RemoteConfig(threshold = 0)
         private fun File.sentinelFile(): File = File(File(this, TEST_SUBDIR_NAME), TEST_FILE_NAME)
@@ -124,7 +130,7 @@ internal class SdkStateIntegrationTest(
                 assertEquals(SdkState.NOT_STARTED, sdkState)
 
                 embrace.start(context)
-                assertEquals(SdkState.STARTED, sdkState)
+                assertEquals(SdkState.ENABLED, sdkState)
                 recordSession {
                     embrace.startSpan(SPAN_1).stop()
                     embrace.logInfo(LOG_2)
@@ -174,10 +180,10 @@ internal class SdkStateIntegrationTest(
     }
 
     @Test
-    fun `NOT_STARTED to STARTED - successful start`() {
+    fun `NOT_STARTED to ENABLED - successful start`() {
         testRule.runTest(
             testCaseAction = {
-                assertEquals(SdkState.STARTED, sdkState)
+                assertEquals(SdkState.ENABLED, sdkState)
                 assertTrue(embrace.isStarted)
                 recordSession {
                     assertNotNull(embrace.currentUserSessionId)
@@ -263,13 +269,66 @@ internal class SdkStateIntegrationTest(
     }
 
     @Test
-    fun `STARTED - repeated start is ignored`() {
+    fun `NOT_STARTED to FAILED - a start that throws partway is torn down without deleting data`() {
+        lateinit var lifecycleOwner: TestLifecycleOwner
+        testRule.runTest(
+            expectSdkToStart = false,
+            expectedSdkState = SdkState.FAILED,
+            setupAction = {
+                getFakeErrorHandler().throwOnSdkError = false
+                createSentinelFiles()
+                startFailure = IllegalStateException("start failure")
+                lifecycleOwner = fakeLifecycleOwner
+            },
+            testCaseAction = {
+                assertEquals(SdkState.FAILED, sdkState)
+                assertFalse(embrace.isStarted)
+                assertInternalApiIsNoop()
+                assertEquals(0, lifecycleOwner.observerCount)
+                recordSession {
+                    embrace.logInfo(LOG_1)
+                }
+            },
+            assertAction = {
+                assertStorageKept()
+                assertEquals(0, getLogEnvelopes(0).size)
+                assertEquals(0, getSessionEnvelopes(0).size)
+            },
+        )
+    }
+
+    @Test
+    fun `NOT_STARTED to FAILED - start is rejected when instance start throws`() {
+        lateinit var errorHandler: FakeErrorHandler
+        val failure = IllegalStateException("instance start failure")
+        testRule.runTest(
+            expectSdkToStart = false,
+            expectedSdkState = SdkState.FAILED,
+            setupAction = {
+                errorHandler = getFakeErrorHandler().apply {
+                    throwOnSdkError = false
+                }
+                startFailure = failure
+            },
+            testCaseAction = {
+                assertEquals(SdkState.FAILED, sdkState)
+                assertFalse(embrace.isStarted)
+            },
+            assertAction = {
+                val error = errorHandler.sdkErrorMessages.single { it.msg == SdkErrorType.SdkInitPhaseFail.toString() }
+                assertSame(failure, error.throwable)
+            },
+        )
+    }
+
+    @Test
+    fun `ENABLED - repeated start is ignored`() {
         testRule.runTest(
             testCaseAction = {
                 recordSession {
                     val userSessionId = embrace.currentUserSessionId
                     embrace.start(context)
-                    assertEquals(SdkState.STARTED, sdkState)
+                    assertEquals(SdkState.ENABLED, sdkState)
                     assertEquals(userSessionId, embrace.currentUserSessionId)
                 }
             },
@@ -281,20 +340,14 @@ internal class SdkStateIntegrationTest(
     }
 
     @Test
-    fun `STARTED to DISABLED - data export stops`() {
+    fun `ENABLED to DISABLED - data export stops`() {
         lateinit var errorHandler: FakeErrorHandler
         testRule.runTest(
             setupAction = {
                 errorHandler = getFakeErrorHandler().apply {
                     throwOnSdkError = false
                 }
-                // create dummy values in embrace directories to see if they are deleted
-                embraceDirs.values.forEach {
-                    it.sentinelFile().apply {
-                        parentFile?.mkdirs()
-                        writeText(DUMMY_CONTENT)
-                    }
-                }
+                createSentinelFiles()
             },
             testCaseAction = {
                 embraceDirs.filterKeys { it !in STARTUP_SWEPT_DIRS }.values.forEach {
@@ -335,7 +388,7 @@ internal class SdkStateIntegrationTest(
     }
 
     @Test
-    fun `STARTED to DISABLED - customer processors stop receiving telemetry and are shut down`() {
+    fun `ENABLED to DISABLED - customer processors stop receiving telemetry and are shut down`() {
         val spanProcessor = FakeSpanProcessor()
         val logRecordProcessor = FakeLogRecordProcessor()
         testRule.runTest(
@@ -365,7 +418,7 @@ internal class SdkStateIntegrationTest(
     }
 
     @Test
-    fun `STARTED to DISABLED - event bus is stopped`() {
+    fun `ENABLED to DISABLED - event bus is stopped`() {
         testRule.runTest(
             testCaseAction = {
                 val key = EventKey<Unit>()
@@ -392,6 +445,7 @@ internal class SdkStateIntegrationTest(
                 errorHandler = getFakeErrorHandler().apply {
                     throwOnSdkError = false
                 }
+                createSentinelFiles()
             },
             testCaseAction = {
                 embrace.disable()
@@ -416,6 +470,9 @@ internal class SdkStateIntegrationTest(
     @Test
     fun `DISABLED - repeated disable is ignored`() {
         testRule.runTest(
+            setupAction = {
+                createSentinelFiles()
+            },
             testCaseAction = {
                 embrace.disable()
                 embrace.disable()
@@ -465,7 +522,7 @@ internal class SdkStateIntegrationTest(
     }
 
     @Test
-    fun `NOT_STARTED to STARTED - internal API switches from noop to the SDK`() {
+    fun `NOT_STARTED to ENABLED - internal API switches from noop to the SDK`() {
         testRule.runTest(
             startSdk = false,
             testCaseAction = {
@@ -523,6 +580,9 @@ internal class SdkStateIntegrationTest(
         testRule.runTest(
             persistedRemoteConfig = sdkDisabledConfig,
             expectSdkToStart = false,
+            setupAction = {
+                createSentinelFiles()
+            },
             testCaseAction = {
                 embrace.disable()
                 assertEquals(SdkState.DISABLED, sdkState)
@@ -531,12 +591,19 @@ internal class SdkStateIntegrationTest(
                 assertFalse(embrace.isStarted)
                 assertInternalApiIsNoop()
             },
+            assertAction = {
+                // no instance was started to disable, so the state holder deletes what earlier launches persisted itself
+                awaitStorageDeleted()
+            },
         )
     }
 
     @Test
-    fun `STARTED to DISABLED - internal API stays noop after start`() {
+    fun `ENABLED to DISABLED - internal API stays noop after start`() {
         testRule.runTest(
+            setupAction = {
+                createSentinelFiles()
+            },
             testCaseAction = {
                 assertInternalApiIsLive()
 
@@ -571,6 +638,21 @@ internal class SdkStateIntegrationTest(
         assertNotSame(NoopInternalInterfaceApi.flutterInternalInterface, api.flutterInternalInterface)
     }
 
+    /**
+     * Writes a file into every SDK storage directory, so a test can wait for disable to delete them.
+     */
+    private fun createSentinelFiles() {
+        embraceDirs.values.forEach {
+            it.sentinelFile().apply {
+                parentFile?.mkdirs()
+                writeText(DUMMY_CONTENT)
+            }
+        }
+    }
+
+    /**
+     * Waits for disable to delete the files [createSentinelFiles] wrote.
+     */
     private fun awaitStorageDeleted() {
         returnIfConditionMet(
             desiredValueSupplier = { true },
@@ -581,6 +663,25 @@ internal class SdkStateIntegrationTest(
             },
             condition = { it },
         )
+    }
+
+    /**
+     * Asserts that the files [createSentinelFiles] wrote outlive the SDK's teardown. Disable deletes them once the SDK's
+     * workers have stopped, so this waits for that point and then a little longer.
+     */
+    private fun assertStorageKept() {
+        val keptDirs = embraceDirs.filterKeys { it !in STARTUP_SWEPT_DIRS }.values
+        assertTrue(testRule.services.workerThreadPool.awaitTermination(WORKER_TERMINATION_WAIT_MS))
+        assertThrows(TimeoutException::class.java) {
+            waitUntilConditionMet(
+                waitTimeMs = STORAGE_KEPT_WAIT_MS,
+                dataProvider = { keptDirs.any { !it.sentinelFile().exists() } },
+                condition = { it },
+            )
+        }
+        keptDirs.forEach {
+            assertEquals(DUMMY_CONTENT, it.sentinelFile().readText())
+        }
     }
 
     /**
