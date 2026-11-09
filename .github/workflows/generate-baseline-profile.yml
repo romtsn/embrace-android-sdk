@@ -35,13 +35,13 @@ jobs:
           java-version: 21
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+        uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
 
       # Runs on a pixel6Api34 managed AOSP device - see BaselineProfileGenerator before changing this image.
       - name: Generate Baseline Profile
         run: |
           set -- --gradle-arg -Pandroid.testoptions.manageddevices.emulator.gpu=swiftshader_indirect \
-            --gradle-arg -Pandroid.experimental.testOptions.managedDevices.maxConcurrentDevices=1
+            --gradle-arg -Pandroid.experimental.testOptions.managedDevices.maxConcurrentDevices=1 --gradle-arg --warn
           scripts/generate-baseline-profile.sh "$@" || scripts/generate-baseline-profile.sh --no-publish "$@"
 
       - name: Archive generator outputs

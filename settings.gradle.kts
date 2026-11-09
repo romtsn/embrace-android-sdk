@@ -6,7 +6,9 @@ include(
     ":embrace-android-config",
     ":embrace-android-config-fakes",
     ":embrace-android-envelope",
+    ":embrace-android-error-handling",
     ":embrace-android-infra",
+    ":embrace-android-storage",
     ":embrace-android-limits",
     ":embrace-android-utils",
     ":embrace-android-instrumentation-vitals",
@@ -55,6 +57,7 @@ include(
     ":embrace-macrobenchmark",
     ":embrace-macrobenchmark-app",
     ":embrace-minified-test-app",
+    ":embrace-apk-size",
 )
 
 pluginManagement {

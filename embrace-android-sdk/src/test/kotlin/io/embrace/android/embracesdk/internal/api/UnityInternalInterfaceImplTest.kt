@@ -2,12 +2,13 @@ package io.embrace.android.embracesdk.internal.api
 
 import io.embrace.android.embracesdk.fakes.FakeErrorHandler
 import io.embrace.android.embracesdk.fakes.FakeInternalTelemetryService
-import io.embrace.android.embracesdk.fakes.FakeKeyValueStore
+import io.embrace.android.embracesdk.fakes.FakePersistedSdkStateStore
 import io.embrace.android.embracesdk.fakes.unimplemented
 import io.embrace.android.embracesdk.internal.api.delegate.HostedSdkInternalInterfaceImpl
 import io.embrace.android.embracesdk.internal.envelope.metadata.HostedSdkVersionInfo
-import io.embrace.android.embracesdk.internal.envelope.metadata.UnitySdkVersionInfo
+import io.embrace.android.embracesdk.internal.injection.createHostedSdkVersionInfo
 import io.embrace.android.embracesdk.internal.logging.ErrorHandler
+import io.embrace.android.embracesdk.internal.payload.AppFramework
 import org.junit.Assert.assertEquals
 import org.junit.Before
 import org.junit.Test
@@ -16,14 +17,14 @@ internal class UnityInternalInterfaceImplTest {
 
     private lateinit var hostedSdkVersionInfo: HostedSdkVersionInfo
     private lateinit var impl: HostedSdkInternalInterfaceImpl
-    private lateinit var store: FakeKeyValueStore
+    private lateinit var store: FakePersistedSdkStateStore
     private lateinit var errorHandler: ErrorHandler
 
     @Before
     fun setUp() {
-        store = FakeKeyValueStore()
+        store = FakePersistedSdkStateStore()
         errorHandler = FakeErrorHandler()
-        hostedSdkVersionInfo = UnitySdkVersionInfo(store)
+        hostedSdkVersionInfo = createHostedSdkVersionInfo(AppFramework.UNITY, store, errorHandler)
         impl = HostedSdkInternalInterfaceImpl(
             logsApi = unimplemented(),
             configService = unimplemented(),
@@ -38,16 +39,26 @@ internal class UnityInternalInterfaceImplTest {
     }
 
     @Test
-    fun testSetUnityMetaDataNull() {
-        impl.setUnityMetaData(null, null, "unitySdkVersion")
-        assertEquals(emptyMap<String, Any?>(), store.values())
+    fun testSetUnityBuildGuid() {
+        impl.setUnityBuildGuid("buildGuid")
+        impl.setUnityBuildGuid(null)
+        impl.setUnityBuildGuid("")
+        assertEquals("buildGuid", hostedSdkVersionInfo.unityBuildIdNumber)
     }
 
+    @Suppress("DEPRECATION")
     @Test
-    fun testSetUnityMetaDataUsesSingleCommit() {
+    fun testSetUnityMetaDataNull() {
+        impl.setUnityMetaData(null, null, "unitySdkVersion")
+        assertEquals(0, store.updateCount)
+    }
+
+    @Suppress("DEPRECATION")
+    @Test
+    fun testSetUnityMetaDataUsesSingleUpdate() {
         impl.setUnityMetaData("unityVersion", "buildGuid", "unitySdkVersion")
 
-        assertEquals(1, store.commitCount)
+        assertEquals(1, store.updateCount)
         assertEquals("unityVersion", hostedSdkVersionInfo.hostedPlatformVersion)
         assertEquals("unitySdkVersion", hostedSdkVersionInfo.hostedSdkVersion)
         assertEquals("buildGuid", hostedSdkVersionInfo.unityBuildIdNumber)

@@ -7,16 +7,16 @@ import io.embrace.android.embracesdk.internal.arch.InstrumentationArgs
 import io.embrace.android.embracesdk.internal.arch.datasource.TelemetryDestination
 import io.embrace.android.embracesdk.internal.arch.navigation.NavigationTrackingService
 import io.embrace.android.embracesdk.internal.arch.state.ProcessStateTracker
+import io.embrace.android.embracesdk.internal.arch.store.DeliveredAeiStore
+import io.embrace.android.embracesdk.internal.arch.store.NetworkCaptureRuleStore
 import io.embrace.android.embracesdk.internal.capture.session.UserSessionPropertiesService
 import io.embrace.android.embracesdk.internal.clock.Clock
 import io.embrace.android.embracesdk.internal.config.ConfigService
 import io.embrace.android.embracesdk.internal.logging.ErrorHandler
-import io.embrace.android.embracesdk.internal.prefs.PrefsDeliveredAeiStore
-import io.embrace.android.embracesdk.internal.prefs.PrefsNetworkCaptureRuleStore
 import io.embrace.android.embracesdk.internal.serialization.PlatformSerializer
 import io.embrace.android.embracesdk.internal.session.id.SessionIdsSnapshot
 import io.embrace.android.embracesdk.internal.session.id.SessionPartTracker
-import io.embrace.android.embracesdk.internal.store.KeyValueStore
+import io.embrace.android.embracesdk.internal.storage.SdkStorage
 import io.embrace.android.embracesdk.internal.store.OrdinalStore
 import io.embrace.android.embracesdk.internal.telemetry.InternalTelemetryService
 import io.embrace.android.embracesdk.internal.utils.UuidSource
@@ -31,7 +31,8 @@ fun createInstrumentationArgs(
     clock: Clock,
     context: Context,
     application: Application,
-    storeProvider: () -> KeyValueStore,
+    deliveredAeiStoreProvider: () -> DeliveredAeiStore,
+    networkCaptureRuleStoreProvider: () -> NetworkCaptureRuleStore,
     serializer: PlatformSerializer,
     uuidSource: UuidSource,
     ordinalStore: OrdinalStore,
@@ -45,6 +46,7 @@ fun createInstrumentationArgs(
     userSessionIdsProvider: () -> String?,
     activeSessionIdsProvider: () -> SessionIdsSnapshot,
     crashMarkerFileProvider: () -> File,
+    sdkStorage: SdkStorage,
     eventBus: EventBus,
 ): InstrumentationArgs = InstrumentationArgsImpl(
     configService = configService,
@@ -53,8 +55,8 @@ fun createInstrumentationArgs(
     clock = clock,
     context = context,
     application = application,
-    deliveredAeiStoreProvider = { PrefsDeliveredAeiStore(storeProvider()) },
-    networkCaptureRuleStoreProvider = { PrefsNetworkCaptureRuleStore(storeProvider()) },
+    deliveredAeiStoreProvider = deliveredAeiStoreProvider,
+    networkCaptureRuleStoreProvider = networkCaptureRuleStoreProvider,
     serializer = serializer,
     uuidSource = uuidSource,
     ordinalStore = ordinalStore,
@@ -68,5 +70,6 @@ fun createInstrumentationArgs(
     userSessionIdsProvider = userSessionIdsProvider,
     activeSessionIdsProvider = activeSessionIdsProvider,
     crashMarkerFileProvider = crashMarkerFileProvider,
+    sdkStorage = sdkStorage,
     eventBus = eventBus,
 )

@@ -1,9 +1,11 @@
 package io.embrace.android.embracesdk.internal.arch.schema
 
+import io.embrace.android.embracesdk.internal.logging.SdkErrorSnapshot
 import io.embrace.android.embracesdk.semconv.EmbAeiAttributes
 import io.embrace.android.embracesdk.semconv.EmbAndroidAttributes
 import io.embrace.android.embracesdk.semconv.EmbBreadcrumbAttributes
 import io.embrace.android.embracesdk.semconv.EmbCommonAttributes
+import io.embrace.android.embracesdk.semconv.EmbInteractionResponsivenessAttributes
 import io.embrace.android.embracesdk.semconv.EmbNetworkCapturedRequestAttributes
 import io.embrace.android.embracesdk.semconv.EmbNetworkStateAttributes
 import io.embrace.android.embracesdk.semconv.EmbNetworkStatusAttributes
@@ -319,17 +321,40 @@ sealed class SchemaType(
         )
     }
 
-    class SdkError(throwable: Throwable) : SchemaType(
+    /**
+     * Experimental interaction responsiveness vital: touch-down dispatch delay and main-thread blocks over a focal moment.
+     */
+    class InteractionResponsiveness(
+        outcome: String,
+        dispatchDelayMs: Long?,
+        longestBlockMs: Long,
+        totalBlockedMs: Long,
+        blockCount: Int,
+        blockThresholdMs: Long,
+        probeIntervalMs: Long,
+    ) : SchemaType(
+        telemetryType = EmbType.Performance.InteractionResponsiveness,
+        fixedObjectName = "interaction-responsiveness",
+    ) {
+        override val schemaAttributes: Map<String, String> = mapOf(
+            EmbInteractionResponsivenessAttributes.INTERACTION_RESPONSIVENESS_OUTCOME to outcome,
+            EmbInteractionResponsivenessAttributes.INTERACTION_RESPONSIVENESS_DISPATCH_DELAY_MS to dispatchDelayMs?.toString(),
+            EmbInteractionResponsivenessAttributes.INTERACTION_RESPONSIVENESS_LONGEST_BLOCK_MS to longestBlockMs.toString(),
+            EmbInteractionResponsivenessAttributes.INTERACTION_RESPONSIVENESS_TOTAL_BLOCKED_MS to totalBlockedMs.toString(),
+            EmbInteractionResponsivenessAttributes.INTERACTION_RESPONSIVENESS_BLOCK_COUNT to blockCount.toString(),
+            EmbInteractionResponsivenessAttributes.INTERACTION_RESPONSIVENESS_BLOCK_THRESHOLD_MS to blockThresholdMs.toString(),
+            EmbInteractionResponsivenessAttributes.INTERACTION_RESPONSIVENESS_PROBE_INTERVAL_MS to probeIntervalMs.toString(),
+        ).toNonNullMap()
+    }
+
+    class SdkError(snapshot: SdkErrorSnapshot) : SchemaType(
         telemetryType = EmbType.System.SdkError,
         fixedObjectName = "internal-error",
     ) {
         override val schemaAttributes: Map<String, String> = mapOf(
-            ExceptionAttributes.EXCEPTION_TYPE to throwable.javaClass.name,
-            ExceptionAttributes.EXCEPTION_STACKTRACE to throwable.stackTrace.joinToString(
-                "\n",
-                transform = StackTraceElement::toString,
-            ),
-            ExceptionAttributes.EXCEPTION_MESSAGE to (throwable.message ?: ""),
+            ExceptionAttributes.EXCEPTION_TYPE to snapshot.top.className,
+            ExceptionAttributes.EXCEPTION_STACKTRACE to snapshot.top.frames.joinToString("\n"),
+            ExceptionAttributes.EXCEPTION_MESSAGE to (snapshot.top.message ?: ""),
         )
     }
 

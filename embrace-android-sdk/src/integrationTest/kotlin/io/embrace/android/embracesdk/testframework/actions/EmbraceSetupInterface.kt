@@ -5,6 +5,7 @@ import android.content.Context
 import android.os.Looper
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.testing.TestLifecycleOwner
+import io.embrace.android.embracesdk.fakes.testSdkStorage
 import io.embrace.android.embracesdk.concurrency.BlockingScheduledExecutorService
 import io.embrace.android.embracesdk.fakes.FakeClock
 import io.embrace.android.embracesdk.fakes.FakeErrorHandler
@@ -26,8 +27,8 @@ import io.embrace.android.embracesdk.internal.config.BuildInfo
 import io.embrace.android.embracesdk.internal.config.ConfigService
 import io.embrace.android.embracesdk.internal.delivery.debug.DeliveryTracer
 import io.embrace.android.embracesdk.internal.delivery.storage.PayloadStorageServiceImpl
-import io.embrace.android.embracesdk.internal.delivery.storage.StorageLocation
-import io.embrace.android.embracesdk.internal.delivery.storage.asFile
+import io.embrace.android.embracesdk.internal.storage.SdkDir
+import io.embrace.android.embracesdk.internal.storage.lazyFile
 import io.embrace.android.embracesdk.internal.injection.ConfigLoadServices
 import io.embrace.android.embracesdk.internal.injection.ConfigLoadServicesSupplier
 import io.embrace.android.embracesdk.internal.injection.PreStartServices
@@ -40,6 +41,7 @@ import io.embrace.android.embracesdk.internal.instrumentation.crash.ndk.sharedOb
 import io.embrace.android.embracesdk.internal.instrumentation.startup.SdkInitResourceUsageTracker
 import io.embrace.android.embracesdk.internal.logging.ErrorHandlerImpl
 import io.embrace.android.embracesdk.internal.logging.SdkErrorType
+import io.embrace.android.embracesdk.internal.logging.androidLogcat
 import io.embrace.android.embracesdk.internal.payload.Attribute
 import io.embrace.android.embracesdk.internal.payload.Envelope
 import io.embrace.android.embracesdk.internal.payload.EnvelopeMetadata
@@ -133,13 +135,18 @@ internal class EmbraceSetupInterface(
     var constructionFailure: Throwable? = null
 
     /**
+     * When set, the SDK keeps its state in the files under `noBackupFilesDir/xcor/` rather than in prefs.
+     */
+    var superiorStorageSystemEnabled: Boolean = false
+
+    /**
      * When set, the SDK's start throws this partway through, as the session orchestrator starts.
      */
     var startFailure: Throwable? = null
 
     private val fakeInitServices: TestInitServices = TestInitServices(
         clock = fakeClock,
-        errorHandler = FakeErrorHandler(ignoredErrors = ignoredSdkErrors, delegate = ErrorHandlerImpl(fakeClock)),
+        errorHandler = FakeErrorHandler(ignoredErrors = ignoredSdkErrors, delegate = ErrorHandlerImpl(fakeClock::now, ::androidLogcat)),
         uuidSource = uuidSource,
         // unused: the module graph builds its OTel stack from the SDK's ConfigService
         otelSdkMode = OtelSdkMode.COMPAT,
@@ -205,6 +212,7 @@ internal class EmbraceSetupInterface(
                         createConfigService(preStartServices, instrumentedConfig, serializer, okHttpClient, workerThreadPool, persistedConfig)
                     ).also { services.configService = it }
                 },
+                superiorStorageSystemEnabled = superiorStorageSystemEnabled,
             )
         }
     }
@@ -277,11 +285,7 @@ internal class EmbraceSetupInterface(
             userSessionId = userSessionId,
             sessionPartId = sessionPartId,
         )
-        val sessionsDir = StorageLocation.SESSION_SPLIT.asFile(
-            errorHandler = fakeInitServices.errorHandler,
-            rootDirSupplier = { fakeContext.filesDir },
-            fallbackDirSupplier = { fakeContext.cacheDir },
-        )
+        val sessionsDir = testSdkStorage(fakeContext).lazyFile(SdkDir.TELEMETRY_PENDING_SESSION_PARTS)
         check(File(sessionsDir.value, directory.dirName).mkdirs()) {
             "Could not create session part directory ${directory.dirName}"
         }
@@ -448,6 +452,11 @@ internal class EmbraceSetupInterface(
 
     fun getFakedWorkerExecutor(worker: Worker.Background): BlockingScheduledExecutorService =
         (workerThreadPool as FakeWorkerThreadPool).executorFor(worker)
+
+    /**
+     * Waits for work already running on real workers to finish once the SDK has shut them down.
+     */
+    fun awaitWorkerTermination(timeoutMs: Long = 10_000L): Boolean = workerThreadPool.awaitTermination(timeoutMs)
 
     fun getStore(): KeyValueStore = keyValueStore
 

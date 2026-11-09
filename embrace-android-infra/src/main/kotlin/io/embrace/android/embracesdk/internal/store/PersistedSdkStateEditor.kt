@@ -13,6 +13,13 @@ class PersistedSdkStateEditor internal constructor(private val state: PersistedS
     var userPersonas: Set<String>? = state.userPersonas
     var sessionProperties: Map<String, String> = state.sessionProperties
     var userSession: UserSessionMetadata.Classified? = state.userSession
+    var hostedSdkVersion: String? = state.hostedSdkVersion
+    var hostedPlatformVersion: String? = state.hostedPlatformVersion
+    var unityBuildIdNumber: String? = state.unityBuildIdNumber
+    var javaScriptPatchNumber: String? = state.javaScriptPatchNumber
+    var rnBundleUrl: String? = state.rnBundleUrl
+    var rnBundleId: String? = state.rnBundleId
+    var appVersionStartupScope: String? = state.appVersionStartupScope
 
     internal fun build(): PersistedSdkState = state.copy(
         userId = userId,
@@ -21,6 +28,13 @@ class PersistedSdkStateEditor internal constructor(private val state: PersistedS
         userPersonas = userPersonas,
         sessionProperties = sessionProperties,
         userSession = userSession,
+        hostedSdkVersion = hostedSdkVersion,
+        hostedPlatformVersion = hostedPlatformVersion,
+        unityBuildIdNumber = unityBuildIdNumber,
+        javaScriptPatchNumber = javaScriptPatchNumber,
+        rnBundleUrl = rnBundleUrl,
+        rnBundleId = rnBundleId,
+        appVersionStartupScope = appVersionStartupScope,
     )
 }
 

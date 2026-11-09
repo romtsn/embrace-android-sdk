@@ -1,7 +1,7 @@
 [versions]
 
 binaryCompatibilityValidator = "0.18.2"
-agp = "9.4.1"
+agp = "9.5.1"
 junit = "4.13.2"
 dokka = "2.2.0"
 kotlinGradlePlugin = "2.4.21"
@@ -12,7 +12,7 @@ openTelemetryCore = "1.67.0"
 # which breaks our minimum supported Kotlin (2.0.21). See .github/dependabot.yml.
 lifecycle = "2.8.7"
 annotation = "1.11.0"
-otelKotlin = "0.9.0"
+otelKotlin = "0.10.0"
 # Pinned to 1.10.x: 1.11.0+ requires kotlin-stdlib 2.2.20, which breaks our minimum supported Kotlin (2.0.21).
 kotlinxCoroutines = "1.10.2"
 kotlinxSerialization = "1.8.1"
@@ -20,7 +20,9 @@ kotlinxSerialization = "1.8.1"
 # which can't read 2.1 module metadata
 kotlinxSerializationGradlePlugin = "1.7.3"
 protobuf = "4.36.2"
-wire = "7.1.0"
+wire = "7.1.2"
+# Keep in step with the okio version wire-runtime brings
+okio = "3.18.2"
 profileinstaller = "1.4.1"
 okhttp = "4.12.1"
 firebase = "26.0.1"
@@ -45,7 +47,9 @@ gradleTestKit = "8.11.1"
 zstdJni = "1.5.7-17"
 detekt = "1.23.8"
 buildconfig = "6.1.2"
-agp-api = "8.0.2"
+# bump aliases manually: see .github/dependabot.yml.
+agp-api = "8.1.0"
+agp-api-min = "8.0.2"
 smali = "3.0.10"
 bundletool = "1.18.3"
 vanniktechMavenPublish = "0.37.0"
@@ -79,6 +83,8 @@ opentelemetry-context = { group = "io.opentelemetry", name = "opentelemetry-cont
 protobuf-java = { group = "com.google.protobuf", name = "protobuf-java", version.ref = "protobuf" }
 protobuf-java-util = { group = "com.google.protobuf", name = "protobuf-java-util", version.ref = "protobuf" }
 wire-runtime = { group = "com.squareup.wire", name = "wire-runtime", version.ref = "wire" }
+okio = { group = "com.squareup.okio", name = "okio", version.ref = "okio" }
+okio-fakefilesystem = { group = "com.squareup.okio", name = "okio-fakefilesystem", version.ref = "okio" }
 profileinstaller = { group = "androidx.profileinstaller", name = "profileinstaller", version.ref = "profileinstaller" }
 lint-api = { group = "com.android.tools.lint", name = "lint-api", version.ref = "lint" }
 lint-tests = { group = "com.android.tools.lint", name = "lint-tests", version.ref = "lint" }
@@ -111,11 +117,14 @@ asm-util = { module = "org.ow2.asm:asm-util", version.ref = "asmUtil" }
 gradle-test-kit = { module = "dev.gradleplugins:gradle-test-kit", version.ref = "gradleTestKit" }
 zstd-jni = { module = "com.github.luben:zstd-jni", version.ref = "zstdJni" }
 agp-api = { module = "com.android.tools.build:gradle-api", version.ref = "agp-api" }
+agp-api-min = { module = "com.android.tools.build:gradle-api", version.ref = "agp-api-min" }
 smali-baksmali = { module = "com.android.tools.smali:smali-baksmali", version.ref = "smali" }
+smali-dexlib2 = { module = "com.android.tools.smali:smali-dexlib2", version.ref = "smali" }
 bundletool = { module = "com.android.tools.build:bundletool", version.ref = "bundletool" }
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinxCoroutines" }
 kotlinx-serialization-core = { module = "org.jetbrains.kotlinx:kotlinx-serialization-core", version.ref = "kotlinxSerialization" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
+kotlinx-serialization-json-okio = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json-okio", version.ref = "kotlinxSerialization" }
 kotlinx-serialization-json-gradle-plugin = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerializationGradlePlugin" }
 opentelemetry-kotlin = { module = "io.opentelemetry.kotlin:core", version.ref = "otelKotlin" }
 opentelemetry-kotlin-api = { module = "io.opentelemetry.kotlin:api", version.ref = "otelKotlin" }

@@ -14,12 +14,20 @@ import io.embrace.android.embracesdk.fakes.FakeErrorHandler
 import io.embrace.android.embracesdk.fakes.FakeNetworkConnectivityService
 import io.embrace.android.embracesdk.fakes.FakeReadWriteLogRecord
 import io.embrace.android.embracesdk.fakes.OtelSdkMode
+import io.embrace.android.embracesdk.fakes.TELEMETRY_DIRS
 import io.embrace.android.embracesdk.fakes.TestPlatformSerializer
 import io.embrace.android.embracesdk.fakes.injection.FakeWorkerThreadPool
 import io.embrace.android.embracesdk.fakes.injection.TestInitServices
+import io.embrace.android.embracesdk.fakes.testSdkStorage
+import io.embrace.android.embracesdk.internal.arch.InstrumentationArgs
+import io.embrace.android.embracesdk.internal.arch.InstrumentationProvider
 import io.embrace.android.embracesdk.internal.arch.InstrumentationRegistry
+import io.embrace.android.embracesdk.internal.arch.datasource.DataSource
+import io.embrace.android.embracesdk.internal.arch.datasource.DataSourceFactory
 import io.embrace.android.embracesdk.internal.arch.state.ProcessState
 import io.embrace.android.embracesdk.internal.arch.state.ProcessStateListener
+import io.embrace.android.embracesdk.internal.arch.ui.TapSignal
+import io.embrace.android.embracesdk.internal.capture.connectivity.NetworkConnectivityService
 import io.embrace.android.embracesdk.internal.clock.Clock
 import io.embrace.android.embracesdk.internal.config.ConfigService
 import io.embrace.android.embracesdk.internal.config.PersistedConfig
@@ -28,7 +36,6 @@ import io.embrace.android.embracesdk.internal.config.remote.RemoteConfig
 import io.embrace.android.embracesdk.internal.config.resolved.AutoDataCaptureConfig
 import io.embrace.android.embracesdk.internal.config.resolved.EmbraceConfig
 import io.embrace.android.embracesdk.internal.delivery.intake.IntakeService
-import io.embrace.android.embracesdk.internal.delivery.storage.StorageLocation
 import io.embrace.android.embracesdk.internal.injection.ConfigLoadServices
 import io.embrace.android.embracesdk.internal.injection.PreStartServices
 import io.embrace.android.embracesdk.internal.injection.SdkOverrides
@@ -38,6 +45,7 @@ import io.embrace.android.embracesdk.internal.instance.RealSdkInstance
 import io.embrace.android.embracesdk.internal.instance.createRealSdkInstance
 import io.embrace.android.embracesdk.internal.instrumentation.crash.CrashFileMarker
 import io.embrace.android.embracesdk.internal.instrumentation.crash.jvm.JvmCrashDataSource
+import io.embrace.android.embracesdk.internal.instrumentation.crash.jvm.JvmCrashInstrumentationProvider
 import io.embrace.android.embracesdk.internal.instrumentation.startup.SdkInitResourceUsageTracker
 import io.embrace.android.embracesdk.internal.instrumentation.thread.blockage.ThreadBlockageService
 import io.embrace.android.embracesdk.internal.logging.ErrorHandler
@@ -47,6 +55,8 @@ import io.embrace.android.embracesdk.internal.otel.sdk.OtelSdkWrapper
 import io.embrace.android.embracesdk.internal.session.lifecycle.LifecycleTracker
 import io.embrace.android.embracesdk.internal.session.orchestrator.PayloadStore
 import io.embrace.android.embracesdk.internal.session.orchestrator.SessionOrchestrator
+import io.embrace.android.embracesdk.internal.storage.SdkDir
+import io.embrace.android.embracesdk.internal.utils.event.EventBus
 import io.embrace.android.embracesdk.internal.worker.BackgroundWorker
 import io.embrace.android.embracesdk.internal.worker.Worker
 import io.embrace.android.embracesdk.semconv.EmbSessionAttributes
@@ -69,6 +79,7 @@ import org.robolectric.Robolectric
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import java.io.File
+import java.util.ServiceLoader
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
@@ -87,6 +98,8 @@ internal class RealSdkInstanceFactoryTest {
     private var intakeService: IntakeService? = null
     private var logOrchestratorWorker: BackgroundWorker? = null
     private var lifecycleTrackerRegistered = false
+    private var crashWhileLoading = false
+    private var crashTornDown = false
 
     private val overrides = SdkOverrides(
         lifecycleTracker = { real ->
@@ -100,9 +113,9 @@ internal class RealSdkInstanceFactoryTest {
         },
         otelSdkConfig = { real -> real().also { otelSdkConfig = it } },
         otelSdkWrapper = { real -> real().also { otelSdkWrapper = it } },
-        instrumentationRegistry = { real -> real().also { instrumentationRegistry = it } },
+        instrumentationRegistry = { real -> CrashWhileLoadingRegistry(real()).also { instrumentationRegistry = it } },
         logOrchestratorWorker = { real -> real().also { logOrchestratorWorker = it } },
-        sessionOrchestrator = { real -> real().also { sessionOrchestrator = it } },
+        sessionOrchestrator = { real -> CrashRecordingOrchestrator(real()).also { sessionOrchestrator = it } },
         threadBlockageService = { real -> real().also { threadBlockageService = it } },
         intakeService = { real -> real().also { intakeService = it } },
     )
@@ -160,7 +173,7 @@ internal class RealSdkInstanceFactoryTest {
         val processor = checkNotNull(otelSdkConfig).logRecordProcessor
 
         val log = FakeReadWriteLogRecord()
-        processor.onEmit(log, NoopOpenTelemetry.context.implicit())
+        processor.onEmit(log, NoopOpenTelemetry.context.current())
         assertTrue(log.attributes.containsKey(EmbSessionAttributes.EMB_STATE))
     }
 
@@ -185,7 +198,7 @@ internal class RealSdkInstanceFactoryTest {
     }
 
     private fun createInstanceWithPersistedConfig(cfg: RemoteConfig): RealSdkInstance {
-        val storageDir = File(context.filesDir, PersistedConfig.STORAGE_DIR_NAME).apply { mkdirs() }
+        val storageDir = testSdkStorage(context).dir(SdkDir.REMOTE_CONFIG).toFile()
         File(storageDir, PersistedConfig.CONFIG_RESPONSE_FILE_NAME).outputStream().buffered().use { stream ->
             TestPlatformSerializer().toJson(cfg, RemoteConfig.serializer(), stream)
         }
@@ -302,12 +315,11 @@ internal class RealSdkInstanceFactoryTest {
     }
 
     @Test
-    fun `post load instrumentation hooks up listeners`() {
+    fun `crash teardown handlers are registered with the crash data source`() {
         val instance = createInstance()
         val dataSource = CrashHandlerDataSource()
-        checkNotNull(instrumentationRegistry).add { dataSource }
 
-        instance.postLoadInstrumentation()
+        instance.registerCrashTeardownHandlers(dataSource)
 
         val handlers = dataSource.handlers
         assertEquals(5, handlers.size)
@@ -338,7 +350,7 @@ internal class RealSdkInstanceFactoryTest {
         okHttpClient.value.newCall(Request.Builder().url(server.url("/")).build()).execute().close()
         assertEquals(1, okHttpClient.value.connectionPool.idleConnectionCount())
 
-        val storageDirs = StorageLocation.entries.map { File(context.filesDir, it.dir) }
+        val storageDirs = TELEMETRY_DIRS.map { testSdkStorage(context).dir(it).toFile() }
         File(storageDirs.first().apply(File::mkdirs), "payload").writeText("{}")
 
         val instance = createInstance(
@@ -374,20 +386,131 @@ internal class RealSdkInstanceFactoryTest {
         server.shutdown()
     }
 
+    @Test
+    fun `event sources stop before data sources are disabled`() {
+        var eventBus: EventBus? = null
+        var taps = 0
+        var tapsWhenDisabling: Int? = null
+        val closed = mutableListOf<String>()
+        var closedWhenDisabling: List<String>? = null
+        val instance = createInstance(
+            overrides = SdkOverrides(
+                lifecycleTracker = { real ->
+                    val tracker = real()
+                    object : LifecycleTracker by tracker {
+                        override fun close() {
+                            closed += "process state"
+                            tracker.close()
+                        }
+                    }
+                },
+                networkConnectivityService = { real ->
+                    val service = real()
+                    object : NetworkConnectivityService by service {
+                        override fun close() {
+                            closed += "connectivity"
+                            service.close()
+                        }
+                    }
+                },
+                eventBus = { real -> real().also { eventBus = it } },
+                instrumentationRegistry = { real ->
+                    val registry = real()
+                    object : InstrumentationRegistry by registry {
+                        override fun close() {
+                            checkNotNull(eventBus).emit(TapSignal.KEY, TapSignal("tap", 0f, 0f))
+                            tapsWhenDisabling = taps
+                            closedWhenDisabling = closed.toList()
+                            registry.close()
+                        }
+                    }
+                },
+            ),
+        )
+        instance.runInit()
+        val bus = checkNotNull(eventBus)
+        bus.addHandler(TapSignal.KEY) { taps++ }
+        bus.emit(TapSignal.KEY, TapSignal("tap", 0f, 0f))
+        assertEquals(1, taps)
+
+        instance.disable()
+
+        // the event bus delivers nothing more, and the process state and connectivity listeners are released
+        assertEquals(1, tapsWhenDisabling)
+        assertEquals(listOf("process state", "connectivity"), closedWhenDisabling)
+    }
+
+    /**
+     * The JVM crash handler is installed as soon as its data source loads, so a crash while the rest of the instrumentation
+     * loads must still tear down the SDK.
+     */
+    @Test
+    fun `a crash while instrumentation loads is torn down`() {
+        crashWhileLoading = true
+        createInstance().runInit()
+
+        assertFalse(crashWhileLoading)
+        assertTrue(crashTornDown)
+    }
+
+    /**
+     * The SDK registers the JVM crash instrumentation itself, so it must not also be discovered via SPI, which would register
+     * it a second time.
+     */
+    @Test
+    fun `the JVM crash provider is not discovered via SPI`() {
+        val discovered = ServiceLoader.load(InstrumentationProvider::class.java, InstrumentationProvider::class.java.classLoader)
+        assertFalse(discovered.any { it is JvmCrashInstrumentationProvider })
+    }
+
     // runs the instance's init as SdkStateHolder does, without a pre-start buffer to transition from
     private fun RealSdkInstance.runInit() {
         enable(context)
         onEnabled()
     }
 
-    private fun storageDirs(): List<File> = StorageLocation.entries.map {
-        File(context.filesDir, it.dir).apply { mkdirs() }
+    private fun storageDirs(): List<File> = TELEMETRY_DIRS.map {
+        testSdkStorage(context).dir(it).toFile()
     }
 
     private fun emittedLogState(): Any? {
         val log = FakeReadWriteLogRecord()
-        checkNotNull(otelSdkConfig).logRecordProcessor.onEmit(log, NoopOpenTelemetry.context.implicit())
+        checkNotNull(otelSdkConfig).logRecordProcessor.onEmit(log, NoopOpenTelemetry.context.current())
         return log.attributes[EmbSessionAttributes.EMB_STATE]
+    }
+
+    /**
+     * When [crashWhileLoading] is set, reports a JVM crash as the first instrumentation after the crash data source loads.
+     */
+    private inner class CrashWhileLoadingRegistry(
+        private val impl: InstrumentationRegistry,
+    ) : InstrumentationRegistry by impl {
+        override fun loadInstrumentations(
+            instrumentationProviders: Iterable<InstrumentationProvider>,
+            args: InstrumentationArgs,
+        ) {
+            impl.loadInstrumentations(instrumentationProviders.map { CrashingProvider(it) }, args)
+        }
+
+        private inner class CrashingProvider(private val provider: InstrumentationProvider) : InstrumentationProvider by provider {
+            override fun register(args: InstrumentationArgs): DataSourceFactory<DataSource>? {
+                val crashSource = impl.findByType(JvmCrashDataSource::class)
+                if (crashWhileLoading && crashSource != null) {
+                    crashWhileLoading = false
+                    crashSource.logUnhandledJvmThrowable(IllegalStateException("crash while loading"))
+                }
+                return provider.register(args)
+            }
+        }
+    }
+
+    private inner class CrashRecordingOrchestrator(
+        private val impl: SessionOrchestrator,
+    ) : SessionOrchestrator by impl {
+        override fun handleCrash(crashId: String) {
+            crashTornDown = true
+            impl.handleCrash(crashId)
+        }
     }
 
     private companion object {

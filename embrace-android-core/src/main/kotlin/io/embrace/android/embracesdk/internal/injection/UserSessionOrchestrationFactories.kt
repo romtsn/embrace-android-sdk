@@ -1,6 +1,5 @@
 package io.embrace.android.embracesdk.internal.injection
 
-import android.content.Context
 import io.embrace.android.embracesdk.internal.arch.InstrumentationRegistry
 import io.embrace.android.embracesdk.internal.arch.datasource.TelemetryDestination
 import io.embrace.android.embracesdk.internal.arch.startup.StartupClassifier
@@ -13,8 +12,6 @@ import io.embrace.android.embracesdk.internal.config.ConfigService
 import io.embrace.android.embracesdk.internal.delivery.caching.PayloadCachingService
 import io.embrace.android.embracesdk.internal.delivery.intake.IntakeService
 import io.embrace.android.embracesdk.internal.delivery.storage.CachedLogEnvelopeStore
-import io.embrace.android.embracesdk.internal.delivery.storage.StorageLocation
-import io.embrace.android.embracesdk.internal.delivery.storage.asFile
 import io.embrace.android.embracesdk.internal.envelope.log.LogEnvelopeSource
 import io.embrace.android.embracesdk.internal.envelope.metadata.EnvelopeMetadataSource
 import io.embrace.android.embracesdk.internal.envelope.resource.EnvelopeResourceSource
@@ -41,16 +38,19 @@ import io.embrace.android.embracesdk.internal.session.persistence.SessionPartDir
 import io.embrace.android.embracesdk.internal.session.persistence.SessionPartWriteTracker
 import io.embrace.android.embracesdk.internal.session.persistence.SessionReconstructionService
 import io.embrace.android.embracesdk.internal.spans.CurrentSessionPartSpan
-import io.embrace.android.embracesdk.internal.store.KeyValueStore
+import io.embrace.android.embracesdk.internal.storage.SdkDir
+import io.embrace.android.embracesdk.internal.storage.SdkStorage
+import io.embrace.android.embracesdk.internal.storage.lazyFile
 import io.embrace.android.embracesdk.internal.store.OrdinalStore
 import io.embrace.android.embracesdk.internal.store.PersistedSdkStateStore
+import io.embrace.android.embracesdk.internal.store.StoreWriteBatcher
 import io.embrace.android.embracesdk.internal.telemetry.InternalTelemetryService
 import io.embrace.android.embracesdk.internal.utils.EmbTrace
 import io.embrace.android.embracesdk.internal.utils.UuidSource
 import io.embrace.android.embracesdk.internal.worker.BackgroundWorker
 
 fun createSessionPartReader(
-    context: Context,
+    storage: SdkStorage,
     clock: Clock,
     errorHandler: ErrorHandler,
     configService: ConfigService,
@@ -62,11 +62,7 @@ fun createSessionPartReader(
     processIdProvider: () -> String,
 ): SessionPartReader {
     val sessionsDir = EmbTrace.trace("sessions-dir-init") {
-        StorageLocation.SESSION_SPLIT.asFile(
-            errorHandler = errorHandler,
-            rootDirSupplier = { context.filesDir },
-            fallbackDirSupplier = { context.cacheDir },
-        )
+        storage.lazyFile(SdkDir.TELEMETRY_PENDING_SESSION_PARTS)
     }
     val sessionPartDirectoryStore = EmbTrace.trace("session-part-directory-store-init") {
         SessionPartDirectoryStore(sessionsDir, sessionPersistenceWorker, clock, errorHandler)
@@ -121,7 +117,7 @@ fun createSessionOrchestrator(
     appVersionStartupCounterProvider: () -> Int?,
     logLimitingService: LogLimitingService,
     ordinalStore: OrdinalStore,
-    store: KeyValueStore,
+    writeBatcher: StoreWriteBatcher,
     stateStore: PersistedSdkStateStore,
     backgroundWorker: BackgroundWorker,
     sessionPersistenceWorker: BackgroundWorker,
@@ -193,7 +189,7 @@ fun createSessionOrchestrator(
         telemetryDestination,
         sessionPartSpanAttrPopulator,
         ordinalStore,
-        store,
+        writeBatcher,
         stateStore,
         errorHandler,
         backgroundWorker,

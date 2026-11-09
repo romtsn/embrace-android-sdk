@@ -3,6 +3,7 @@
 package io.embrace.android.embracesdk.internal.prefs
 
 import io.embrace.android.embracesdk.internal.clock.Clock
+import io.embrace.android.embracesdk.internal.payload.AppFramework
 import io.embrace.android.embracesdk.internal.session.BACKGROUND_ONLY_MARKER
 import io.embrace.android.embracesdk.internal.session.UserSessionMetadata
 import io.embrace.android.embracesdk.internal.session.attributes
@@ -18,13 +19,32 @@ import io.embrace.android.embracesdk.semconv.ExperimentalSemconv
 
 /**
  * A [PersistedSdkStateStore] backed by a [KeyValueStore]. This uses the same keys and encoding as the existing
- * [SharedPreferences] store.
+ * [SharedPreferences] store. Hosted SDK values are stored under [appFramework]'s keys, and dropped when it has none.
  */
 class PrefsPersistedSdkStateStore(
     private val store: KeyValueStore,
     private val clock: Clock,
     private val uuidSource: UuidSource,
+    appFramework: AppFramework,
 ) : PersistedSdkStateStore {
+
+    private val hostedSdkVersionKey: String? = when (appFramework) {
+        AppFramework.REACT_NATIVE -> KEY_REACT_NATIVE_SDK_VERSION
+        AppFramework.UNITY -> KEY_UNITY_SDK_VERSION
+        AppFramework.FLUTTER -> KEY_FLUTTER_SDK_VERSION
+        AppFramework.NATIVE -> null
+    }
+
+    private val hostedPlatformVersionKey: String? = when (appFramework) {
+        AppFramework.REACT_NATIVE -> KEY_REACT_NATIVE_VERSION
+        AppFramework.UNITY -> KEY_UNITY_VERSION
+        AppFramework.FLUTTER -> KEY_DART_SDK_VERSION
+        AppFramework.NATIVE -> null
+    }
+
+    private val unityBuildIdKey: String? = KEY_UNITY_BUILD_ID.takeIf { appFramework == AppFramework.UNITY }
+
+    private val javaScriptPatchKey: String? = KEY_JAVASCRIPT_PATCH.takeIf { appFramework == AppFramework.REACT_NATIVE }
 
     private val lock = Any()
 
@@ -36,8 +56,9 @@ class PrefsPersistedSdkStateStore(
     }
 
     override fun update(action: PersistedSdkStateEditor.() -> Unit): PersistedSdkState = synchronized(lock) {
-        val state = snapshot().edit(action)
-        store.editAndCommit { write(state) }
+        val previous = snapshot()
+        val state = previous.edit(action)
+        store.editAndCommit { write(previous, state) }
         current = state
         state
     }
@@ -62,38 +83,56 @@ class PrefsPersistedSdkStateStore(
             userId = store.getString(KEY_USER_ID),
             userEmail = store.getString(KEY_USER_EMAIL),
             userName = store.getString(KEY_USER_NAME),
-            userPersonas = loadPersonas(),
+            userPersonas = store.getStringSet(KEY_USER_PERSONAS),
             sessionProperties = store.getStringMap(KEY_SESSION_PROPERTIES) ?: emptyMap(),
             userSession = store.getStringMap(KEY_USER_SESSION)?.let(::decodeUserSession),
+            hostedSdkVersion = hostedSdkVersionKey?.let(store::getString),
+            hostedPlatformVersion = hostedPlatformVersionKey?.let(store::getString),
+            unityBuildIdNumber = unityBuildIdKey?.let(store::getString),
+            javaScriptPatchNumber = javaScriptPatchKey?.let(store::getString),
+            rnBundleUrl = store.getString(KEY_RN_BUNDLE_URL),
+            rnBundleId = store.getString(KEY_RN_BUNDLE_ID),
         )
     }
 
     /**
-     * Reads the personas. Earlier SDK versions could record the payer persona as a separate flag, so a set flag
-     * adds the payer persona. The flag is never written.
+     * Writes the fields that changed from [previous] to [state]. A write can be held back, as in a batch, and committed after
+     * another thread's update, so writing a field it didn't change would put back the value it captured over the newer one.
+     * A null value or an empty session-properties map removes its key, which the legacy code read as that value.
      */
-    private fun loadPersonas(): Set<String>? {
-        val personas = store.getStringSet(KEY_USER_PERSONAS)
-        return if (store.getBoolean(KEY_LEGACY_USER_IS_PAYER, false)) {
-            personas.orEmpty() + PERSONA_PAYER
-        } else {
-            personas
+    private fun KeyValueStoreEditor.write(previous: PersistedSdkState, state: PersistedSdkState) {
+        putIfChanged(previous.deviceId, state.deviceId) { putString(KEY_DEVICE_ID, it) }
+        putIfChanged(previous.installTimestampMs, state.installTimestampMs) { putLong(KEY_INSTALL_TIMESTAMP, it) }
+        putIfChanged(previous.userId, state.userId) { putString(KEY_USER_ID, it) }
+        putIfChanged(previous.userEmail, state.userEmail) { putString(KEY_USER_EMAIL, it) }
+        putIfChanged(previous.userName, state.userName) { putString(KEY_USER_NAME, it) }
+        putIfChanged(previous.userPersonas, state.userPersonas) { putStringSet(KEY_USER_PERSONAS, it) }
+        putIfChanged(previous.sessionProperties, state.sessionProperties) {
+            putStringMap(KEY_SESSION_PROPERTIES, it.takeIf { properties -> properties.isNotEmpty() })
         }
+        putIfChanged(previous.userSession, state.userSession) {
+            putStringMap(KEY_USER_SESSION, it?.let(::encodeUserSession))
+        }
+        hostedSdkVersionKey?.let { key ->
+            putIfChanged(previous.hostedSdkVersion, state.hostedSdkVersion) { putString(key, it) }
+        }
+        hostedPlatformVersionKey?.let { key ->
+            putIfChanged(previous.hostedPlatformVersion, state.hostedPlatformVersion) { putString(key, it) }
+        }
+        unityBuildIdKey?.let { key ->
+            putIfChanged(previous.unityBuildIdNumber, state.unityBuildIdNumber) { putString(key, it) }
+        }
+        javaScriptPatchKey?.let { key ->
+            putIfChanged(previous.javaScriptPatchNumber, state.javaScriptPatchNumber) { putString(key, it) }
+        }
+        putIfChanged(previous.rnBundleUrl, state.rnBundleUrl) { putString(KEY_RN_BUNDLE_URL, it) }
+        putIfChanged(previous.rnBundleId, state.rnBundleId) { putString(KEY_RN_BUNDLE_ID, it) }
     }
 
-    /**
-     * Writes every field. A null value or an empty session-properties map removes its key, which the legacy code read
-     * as that value.
-     */
-    private fun KeyValueStoreEditor.write(state: PersistedSdkState) {
-        putString(KEY_DEVICE_ID, state.deviceId)
-        putLong(KEY_INSTALL_TIMESTAMP, state.installTimestampMs)
-        putString(KEY_USER_ID, state.userId)
-        putString(KEY_USER_EMAIL, state.userEmail)
-        putString(KEY_USER_NAME, state.userName)
-        putStringSet(KEY_USER_PERSONAS, state.userPersonas)
-        putStringMap(KEY_SESSION_PROPERTIES, state.sessionProperties.takeIf { it.isNotEmpty() })
-        putStringMap(KEY_USER_SESSION, state.userSession?.let(::encodeUserSession))
+    private inline fun <T> putIfChanged(previous: T, value: T, put: (T) -> Unit) {
+        if (value != previous) {
+            put(value)
+        }
     }
 
     /**
@@ -130,9 +169,17 @@ class PrefsPersistedSdkStateStore(
         const val KEY_USER_NAME = "io.embrace.username"
         const val KEY_USER_PERSONAS = "io.embrace.userpersonas"
         const val KEY_SESSION_PROPERTIES = "io.embrace.session.properties"
-        const val KEY_LEGACY_USER_IS_PAYER = "io.embrace.userispayer"
         const val KEY_USER_SESSION = "embrace.user_session"
         const val KEY_LAST_ACTIVITY_TS = "emb.user_session_last_activity_ts"
-        const val PERSONA_PAYER = "payer"
+        const val KEY_REACT_NATIVE_SDK_VERSION = "io.embrace.reactnative.sdk.version"
+        const val KEY_REACT_NATIVE_VERSION = "io.embrace.reactnative.version"
+        const val KEY_JAVASCRIPT_PATCH = "io.embrace.javascript.patch"
+        const val KEY_UNITY_SDK_VERSION = "io.embrace.unity.sdk.version"
+        const val KEY_UNITY_VERSION = "io.embrace.unity.version"
+        const val KEY_UNITY_BUILD_ID = "io.embrace.unity.build.id"
+        const val KEY_FLUTTER_SDK_VERSION = "io.embrace.flutter.sdk.version"
+        const val KEY_DART_SDK_VERSION = "io.embrace.dart.sdk.version"
+        const val KEY_RN_BUNDLE_URL = "io.embrace.jsbundle.url"
+        const val KEY_RN_BUNDLE_ID = "io.embrace.jsbundle.id"
     }
 }

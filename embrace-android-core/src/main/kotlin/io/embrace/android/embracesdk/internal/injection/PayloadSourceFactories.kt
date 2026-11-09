@@ -19,11 +19,7 @@ import io.embrace.android.embracesdk.internal.envelope.log.LogEnvelopeSource
 import io.embrace.android.embracesdk.internal.envelope.log.LogEnvelopeSourceImpl
 import io.embrace.android.embracesdk.internal.envelope.log.LogPayloadSourceImpl
 import io.embrace.android.embracesdk.internal.envelope.metadata.EnvelopeMetadataSource
-import io.embrace.android.embracesdk.internal.envelope.metadata.FlutterSdkVersionInfo
-import io.embrace.android.embracesdk.internal.envelope.metadata.NativeSdkVersionInfo
-import io.embrace.android.embracesdk.internal.envelope.metadata.ObservableHostedSdkVersionInfo
-import io.embrace.android.embracesdk.internal.envelope.metadata.ReactNativeSdkVersionInfo
-import io.embrace.android.embracesdk.internal.envelope.metadata.UnitySdkVersionInfo
+import io.embrace.android.embracesdk.internal.envelope.metadata.SdkVersionInfo
 import io.embrace.android.embracesdk.internal.envelope.resource.DeviceImpl
 import io.embrace.android.embracesdk.internal.envelope.resource.EnvelopeResourceSource
 import io.embrace.android.embracesdk.internal.envelope.resource.EnvelopeResourceSourceImpl
@@ -39,37 +35,29 @@ import io.embrace.android.embracesdk.internal.resurrection.PayloadResurrectionSe
 import io.embrace.android.embracesdk.internal.resurrection.PayloadResurrectionServiceImpl
 import io.embrace.android.embracesdk.internal.serialization.PlatformSerializer
 import io.embrace.android.embracesdk.internal.spans.CurrentSessionPartSpan
-import io.embrace.android.embracesdk.internal.store.KeyValueStore
+import io.embrace.android.embracesdk.internal.store.PersistedSdkStateStore
 import io.embrace.android.embracesdk.internal.utils.EmbTrace
 import io.embrace.android.embracesdk.internal.worker.BackgroundWorker
 
 fun createRnBundleIdTracker(
     context: Context,
     configService: ConfigService,
-    store: KeyValueStore,
+    stateStore: PersistedSdkStateStore,
     worker: BackgroundWorker,
     errorHandler: ErrorHandler,
 ): RnBundleIdTracker = RnBundleIdTrackerImpl(
     { context.assets.open(it) },
     configService,
-    store,
+    stateStore,
     worker,
     errorHandler,
 ).apply { startAsyncRetrieval() }
 
 fun createHostedSdkVersionInfo(
     appFramework: AppFramework,
-    store: KeyValueStore,
+    stateStore: PersistedSdkStateStore,
     errorHandler: ErrorHandler,
-): ObservableHostedSdkVersionInfo = ObservableHostedSdkVersionInfo(
-    when (appFramework) {
-        AppFramework.REACT_NATIVE -> ReactNativeSdkVersionInfo(store)
-        AppFramework.UNITY -> UnitySdkVersionInfo(store)
-        AppFramework.FLUTTER -> FlutterSdkVersionInfo(store)
-        else -> NativeSdkVersionInfo()
-    },
-    errorHandler,
-)
+): SdkVersionInfo = SdkVersionInfo(stateStore, errorHandler, appFramework)
 
 fun createEnvelopeResourceSource(
     context: Context,
@@ -77,7 +65,7 @@ fun createEnvelopeResourceSource(
     worker: BackgroundWorker,
     systemInfo: SystemInfo,
     errorHandler: ErrorHandler,
-    hostedSdkVersionInfo: ObservableHostedSdkVersionInfo,
+    hostedSdkVersionInfo: SdkVersionInfo,
     rnBundleIdTracker: Lazy<RnBundleIdTracker>,
     useKotlinSdkProvider: () -> Boolean,
 ): EnvelopeResourceSource {

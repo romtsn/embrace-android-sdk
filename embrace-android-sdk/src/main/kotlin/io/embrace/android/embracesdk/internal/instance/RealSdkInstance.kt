@@ -38,12 +38,12 @@ import io.embrace.android.embracesdk.internal.config.ConfigService
 import io.embrace.android.embracesdk.internal.delivery.caching.PayloadCachingService
 import io.embrace.android.embracesdk.internal.delivery.scheduling.SchedulingService
 import io.embrace.android.embracesdk.internal.delivery.storage.PayloadStorageService
-import io.embrace.android.embracesdk.internal.delivery.storage.deletePersistedTelemetry
 import io.embrace.android.embracesdk.internal.injection.WorkerThreadPool
 import io.embrace.android.embracesdk.internal.injection.evictConnections
 import io.embrace.android.embracesdk.internal.instrumentation.crash.CrashFileMarker
 import io.embrace.android.embracesdk.internal.instrumentation.crash.LastRunCrashVerifier
 import io.embrace.android.embracesdk.internal.instrumentation.crash.jvm.JvmCrashDataSource
+import io.embrace.android.embracesdk.internal.instrumentation.crash.jvm.JvmCrashInstrumentationProvider
 import io.embrace.android.embracesdk.internal.instrumentation.crash.ndk.NativeCrashDataSource
 import io.embrace.android.embracesdk.internal.instrumentation.network.NetworkCaptureDataSource
 import io.embrace.android.embracesdk.internal.instrumentation.network.NetworkRequestDataSource
@@ -66,11 +66,13 @@ import io.embrace.android.embracesdk.internal.logs.attachments.AttachmentService
 import io.embrace.android.embracesdk.internal.otel.config.OtelSdkConfig
 import io.embrace.android.embracesdk.internal.otel.logs.LogSink
 import io.embrace.android.embracesdk.internal.otel.spans.SpanRepository
+import io.embrace.android.embracesdk.internal.prefs.defaultPrefsFile
 import io.embrace.android.embracesdk.internal.resurrection.PayloadResurrectionService
 import io.embrace.android.embracesdk.internal.resurrection.SessionPartReader
 import io.embrace.android.embracesdk.internal.session.id.SessionPartTracker
 import io.embrace.android.embracesdk.internal.session.orchestrator.PayloadStore
 import io.embrace.android.embracesdk.internal.session.orchestrator.SessionOrchestrator
+import io.embrace.android.embracesdk.internal.storage.SdkStorage
 import io.embrace.android.embracesdk.internal.utils.EmbTrace
 import io.embrace.android.embracesdk.internal.utils.event.EventBus
 import io.embrace.android.embracesdk.internal.worker.Worker
@@ -101,6 +103,7 @@ internal class RealSdkInstance(
     private val okHttpClient: Lazy<OkHttpClient>,
     private val eventBus: EventBus,
     private val appContext: Context,
+    private val sdkStorage: SdkStorage,
     private val spanRepository: SpanRepository,
     private val logSink: LogSink,
     private val otelSdkConfig: Lazy<OtelSdkConfig>,
@@ -222,14 +225,14 @@ internal class RealSdkInstance(
         enabled = false
         runCatching { errorHandler.close() }
         runCatching { otelSdkConfig.value.disableDataExport() }
+        // the sources of events that data sources and their providers listen to are stopped before the data sources are
+        // disabled, so that none of their handlers or listeners runs once disabling starts, whoever registered it
+        runCatching { eventBus.stop() }
+        runCatching { processStateTracker.close() }
+        runCatching { networkConnectivityService.close() }
         runCatching { instrumentationRegistry.close() }
         runCatching { resetHucInstrumentation() }
         runCatching { threadBlockageService?.close() }
-
-        val rootDir = runCatching { appContext.filesDir }.getOrNull()
-        val fallbackDir = runCatching { appContext.cacheDir }.getOrNull()
-        runCatching { processStateTracker.close() }
-        runCatching { networkConnectivityService.close() }
         runCatching { startupTracker.close() }
         runCatching { otelSdkConfig.value.close() }
         runCatching { sessionOrchestrator.close() }
@@ -242,9 +245,8 @@ internal class RealSdkInstance(
         runCatching { schedulingService?.shutdown() }
         runCatching { cancelHttpRequests() }
         runCatching { workerThreadPool.close() }
-        runCatching { eventBus.stop() }
 
-        if (!deletePersistedTelemetry || rootDir == null || fallbackDir == null) {
+        if (!deletePersistedTelemetry) {
             return
         }
         val executor = runCatching { Executors.newSingleThreadExecutor() }.getOrNull() ?: return
@@ -252,11 +254,11 @@ internal class RealSdkInstance(
             runCatching {
                 // deleted at once so that nothing is left to send if the process ends during the wait, then again once the
                 // workers have finished, as work still running can write again
-                deletePersistedTelemetry(rootDir, fallbackDir)
+                sdkStorage.deleteTelemetry()
                 if (!workerThreadPool.awaitTermination(WORKER_TERMINATION_TIMEOUT_MS)) {
                     Log.w("[Embrace]", "Timed out waiting for Embrace workers to finish before deleting data.")
                 }
-                deletePersistedTelemetry(rootDir, fallbackDir)
+                sdkStorage.deleteTelemetry()
             }.onFailure { exception ->
                 Log.e("[Embrace]", "An error occurred while trying to disable Embrace SDK.", exception)
             }
@@ -346,6 +348,14 @@ internal class RealSdkInstance(
     private fun loadInstrumentation() {
         errorHandler.guardSdkCode(SdkErrorType.SdkInitPhaseFail) {
             EmbTrace.trace(sectionName = "load-instrumentation", recordDuration = true) {
+                // Register JVM crash datasource directly so its teardown handlers are in place before any other instrumentation loads.
+                errorHandler.guardSdkCode(SdkErrorType.InstrumentationRegFail) {
+                    instrumentationRegistry.add(
+                        JvmCrashInstrumentationProvider().register(instrumentationArgs),
+                    )?.also { dataSource ->
+                        registerCrashTeardownHandlers(dataSource)
+                    }
+                }
                 instrumentationRegistry.loadInstrumentations(loadInstrumentationProviders(), instrumentationArgs)
 
                 threadBlockageService?.startCapture()
@@ -424,19 +434,26 @@ internal class RealSdkInstance(
     }
 
     /**
-     * Performs post-load instrumentation tasks such as setting listeners.
+     * Gives the JVM crash data source the services that must be torn down when the app crashes.
      */
-    internal fun postLoadInstrumentation() {
+    internal fun registerCrashTeardownHandlers(dataSource: JvmCrashDataSource) {
         errorHandler.guardSdkCode(SdkErrorType.SdkInitPhaseFail) {
-            // setup crash teardown handlers
-            val registry = instrumentationRegistry
-            registry.findByType(JvmCrashDataSource::class)?.apply {
+            with(dataSource) {
                 threadBlockageService?.let(::addCrashTeardownHandler)
                 addCrashTeardownHandler(logOrchestrator)
                 addCrashTeardownHandler(sessionOrchestrator)
                 addCrashTeardownHandler(crashMarker)
                 payloadStore?.let(::addCrashTeardownHandler)
             }
+        }
+    }
+
+    /**
+     * Performs post-load instrumentation tasks such as setting listeners.
+     */
+    private fun postLoadInstrumentation() {
+        errorHandler.guardSdkCode(SdkErrorType.SdkInitPhaseFail) {
+            val registry = instrumentationRegistry
             workerThreadPool.backgroundWorker(Worker.Background.NonIoRegWorker).submit {
                 if (!enabled) {
                     return@submit
@@ -537,7 +554,7 @@ internal class RealSdkInstance(
                                 activityManagerProvider = {
                                     instrumentationArgs.systemService(Context.ACTIVITY_SERVICE)
                                 },
-                                prefsFileSizeProvider = { defaultPrefsFile(appContext)?.length() },
+                                prefsFileSizeProvider = { existingPrefsFile(appContext)?.length() },
                             ) {
                                 appContext.applicationInfo?.sourceDir?.let { sourceDir ->
                                     ArtOptimizationState.create(
@@ -569,9 +586,7 @@ internal class RealSdkInstance(
      *
      * Returns null if the file is absent, so a missing file is not reported.
      */
-    private fun defaultPrefsFile(context: Context): File? =
-        File(File(context.applicationInfo.dataDir, "shared_prefs"), "${context.packageName}_preferences.xml")
-            .takeIf(File::exists)
+    private fun existingPrefsFile(context: Context): File? = defaultPrefsFile(context).takeIf(File::exists)
 }
 
 private const val SPAN_TIMEOUT_SWEEP_INTERVAL_MS = 30_000L

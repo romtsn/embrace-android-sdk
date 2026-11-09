@@ -10,7 +10,7 @@ dependencies {
     implementation(gradleApi())
     implementation(gradleTestKit())
     implementation(project(":embrace-gradle-plugin"))
-    implementation(libs.agp.api)
+    implementation(libs.agp.api.min)
 
     // JSON construction and parsing
     implementation(libs.kotlinx.serialization.json.gradle.plugin)
@@ -22,6 +22,7 @@ dependencies {
     implementation(libs.bundletool)
     implementation(libs.smali.baksmali)
 
+    testImplementation(libs.okio)
     testImplementation(project(":embrace-test-common"))
 }
 
@@ -67,7 +68,7 @@ tasks.register<Test>("sanityTest") {
 }
 
 group = "io.embrace"
-version = project.properties["version"] as String
+version = providers.gradleProperty("version").get()
 
 gradlePlugin {
     plugins {

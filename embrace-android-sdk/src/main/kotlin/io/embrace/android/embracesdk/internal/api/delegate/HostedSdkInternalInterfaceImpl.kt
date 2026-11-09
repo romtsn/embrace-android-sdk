@@ -57,6 +57,14 @@ internal class HostedSdkInternalInterfaceImpl(
         resourceSource.add(key, value)
     }
 
+    override fun setHostedSdkVersion(version: String?) = record("set_hosted_sdk_version") {
+        updateHostedSdkVersion(version)
+    }
+
+    override fun setHostedPlatformVersion(version: String?) = record("set_hosted_platform_version") {
+        updateHostedPlatformVersion(version)
+    }
+
     override fun logUnhandledJsException(
         name: String,
         message: String,
@@ -78,24 +86,25 @@ internal class HostedSdkInternalInterfaceImpl(
 
     override fun setJavaScriptPatchNumber(number: String?) = record("set_javascript_patch_number") {
         if (!number.isNullOrEmpty()) {
-            hostedSdkVersionInfo.javaScriptPatchNumber = number
+            hostedSdkVersionInfo.update { javaScriptPatchNumber = number }
         }
     }
 
+    @Suppress("OVERRIDE_DEPRECATION")
     override fun setReactNativeSdkVersion(version: String?) = record("set_react_native_sdk_version") {
-        hostedSdkVersionInfo.hostedSdkVersion = version
+        updateHostedSdkVersion(version)
     }
 
+    @Suppress("OVERRIDE_DEPRECATION")
     override fun setReactNativeVersionNumber(version: String?) = record("set_react_native_version_number") {
-        if (!version.isNullOrEmpty()) {
-            hostedSdkVersionInfo.hostedPlatformVersion = version
-        }
+        updateHostedPlatformVersion(version)
     }
 
     override fun setJavaScriptBundleUrl(context: Context, url: String) = record("set_javascript_bundle_url") {
         rnBundleIdTracker.value.setReactNativeBundleId(url)
     }
 
+    @Suppress("OVERRIDE_DEPRECATION")
     override fun setUnityMetaData(
         unityVersion: String?,
         buildGuid: String?,
@@ -110,11 +119,17 @@ internal class HostedSdkInternalInterfaceImpl(
                 severity = ErrorHandler.Severity.ERROR,
             )
         } else if (unitySdkVersion != null) {
-            hostedSdkVersionInfo.batch {
-                hostedSdkVersionInfo.hostedPlatformVersion = unityVersion
-                hostedSdkVersionInfo.hostedSdkVersion = unitySdkVersion
-                hostedSdkVersionInfo.unityBuildIdNumber = buildGuid
+            hostedSdkVersionInfo.update {
+                hostedPlatformVersion = unityVersion
+                hostedSdkVersion = unitySdkVersion
+                unityBuildIdNumber = buildGuid
             }
+        }
+    }
+
+    override fun setUnityBuildGuid(buildGuid: String?) = record("set_unity_build_guid") {
+        if (!buildGuid.isNullOrEmpty()) {
+            hostedSdkVersionInfo.update { unityBuildIdNumber = buildGuid }
         }
     }
 
@@ -155,15 +170,25 @@ internal class HostedSdkInternalInterfaceImpl(
         )
     }
 
+    @Suppress("OVERRIDE_DEPRECATION")
     override fun setEmbraceFlutterSdkVersion(version: String?) = record("set_embrace_flutter_sdk_version") {
-        if (version != null) {
-            hostedSdkVersionInfo.hostedSdkVersion = version
+        updateHostedSdkVersion(version)
+    }
+
+    @Suppress("OVERRIDE_DEPRECATION")
+    override fun setDartVersion(version: String?) = record("set_dart_version") {
+        updateHostedPlatformVersion(version)
+    }
+
+    private fun updateHostedSdkVersion(version: String?) {
+        if (!version.isNullOrEmpty()) {
+            hostedSdkVersionInfo.update { hostedSdkVersion = version }
         }
     }
 
-    override fun setDartVersion(version: String?) = record("set_dart_version") {
-        if (version != null) {
-            hostedSdkVersionInfo.hostedPlatformVersion = version
+    private fun updateHostedPlatformVersion(version: String?) {
+        if (!version.isNullOrEmpty()) {
+            hostedSdkVersionInfo.update { hostedPlatformVersion = version }
         }
     }
 
