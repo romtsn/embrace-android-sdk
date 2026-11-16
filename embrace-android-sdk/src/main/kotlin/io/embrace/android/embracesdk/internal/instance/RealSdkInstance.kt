@@ -65,11 +65,14 @@ import io.embrace.android.embracesdk.internal.logs.LogOrchestrator
 import io.embrace.android.embracesdk.internal.logs.attachments.AttachmentService
 import io.embrace.android.embracesdk.internal.otel.config.OtelSdkConfig
 import io.embrace.android.embracesdk.internal.otel.logs.LogSink
+import io.embrace.android.embracesdk.internal.otel.sdk.ProcessOtelSdkErrorHandler
 import io.embrace.android.embracesdk.internal.otel.spans.SpanRepository
 import io.embrace.android.embracesdk.internal.prefs.defaultPrefsFile
 import io.embrace.android.embracesdk.internal.resurrection.PayloadResurrectionService
+import io.embrace.android.embracesdk.internal.resurrection.ResurrectionOutcome
 import io.embrace.android.embracesdk.internal.resurrection.SessionPartReader
 import io.embrace.android.embracesdk.internal.session.id.SessionPartTracker
+import io.embrace.android.embracesdk.internal.session.lifecycle.ActivityLifecycleRelay
 import io.embrace.android.embracesdk.internal.session.orchestrator.PayloadStore
 import io.embrace.android.embracesdk.internal.session.orchestrator.SessionOrchestrator
 import io.embrace.android.embracesdk.internal.storage.SdkStorage
@@ -102,6 +105,7 @@ internal class RealSdkInstance(
     private val workerThreadPool: WorkerThreadPool,
     private val okHttpClient: Lazy<OkHttpClient>,
     private val eventBus: EventBus,
+    private val activityLifecycleRelay: ActivityLifecycleRelay,
     private val appContext: Context,
     private val sdkStorage: SdkStorage,
     private val spanRepository: SpanRepository,
@@ -185,6 +189,7 @@ internal class RealSdkInstance(
 
     override fun enable(context: Context) {
         try {
+            activityLifecycleRelay.register()
             EmbTrace.trace(sectionName = "process-state-tracker-register", recordDuration = true) {
                 processStateTracker.register()
             }
@@ -224,10 +229,12 @@ internal class RealSdkInstance(
     private fun tearDown(deletePersistedTelemetry: Boolean) {
         enabled = false
         runCatching { errorHandler.close() }
+        runCatching { ProcessOtelSdkErrorHandler.detach(errorHandler) }
         runCatching { otelSdkConfig.value.disableDataExport() }
         // the sources of events that data sources and their providers listen to are stopped before the data sources are
         // disabled, so that none of their handlers or listeners runs once disabling starts, whoever registered it
         runCatching { eventBus.stop() }
+        runCatching { activityLifecycleRelay.close() }
         runCatching { processStateTracker.close() }
         runCatching { networkConnectivityService.close() }
         runCatching { instrumentationRegistry.close() }
@@ -479,6 +486,7 @@ internal class RealSdkInstance(
                 if (!enabled) {
                     return@submit
                 }
+                var resurrectionOutcome = ResurrectionOutcome.COMPLETE
                 errorHandler.guardSdkCode(SdkErrorType.PayloadResurrectionFail) {
                     // Get real network status as soon as we can on the worker.
                     // This allows the delivery triggered by resurrection to get the most accurate network status as possible
@@ -498,7 +506,7 @@ internal class RealSdkInstance(
                         schedulingService?.let { scheduler ->
                             resurrectionService.addResurrectionCompleteListener(scheduler::onResurrectionComplete)
                         }
-                        resurrectionService.resurrectOldPayloads(
+                        resurrectionOutcome = resurrectionService.resurrectOldPayloads(
                             nativeCrashServiceProvider = {
                                 instrumentationRegistry.findByType(NativeCrashDataSource::class)
                             },
@@ -520,9 +528,13 @@ internal class RealSdkInstance(
                     }
                 }
 
-                // always unblock the scheduler, even if resurrection didn't run or failed partway, as otherwise
-                // non-crash payloads would never be delivered in this process
-                schedulingService?.onResurrectionComplete()
+                // Unblock the scheduler even if resurrection didn't run or failed partway, as otherwise non-crash payloads would never
+                // be delivered in this process. The exception is a pass the intake interrupted because the SDK is shutting down (a
+                // crash, disable() or close()): the payloads it left on disk go out on the next launch, and nothing newer may
+                // overtake them.
+                if (resurrectionOutcome == ResurrectionOutcome.COMPLETE) {
+                    schedulingService?.onResurrectionComplete()
+                }
             }
         }
     }
